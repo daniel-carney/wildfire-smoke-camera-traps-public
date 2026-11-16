@@ -1,29 +1,34 @@
 # ============================================================
 # 18_moose_daily_count_pm25_ale.R
 #
-# MOOSE DAILY-COUNT PM2.5 ALE ANALYSIS
+# MOOSE PM2.5 ACCUMULATED LOCAL EFFECTS
 #
 # PURPOSE:
 #
-# Examine how predicted daily moose detection counts change
-# across wildfire-attributable PM2.5 levels.
+# Examine the modeled relationship between wildfire-related
+# PM2.5 and daily moose detection counts.
 #
-# The Random Forest response is Daily_Count, so all camera-days
-# are represented, including zero-detection days.
+# This script uses the finalized Random Forest settings:
 #
-# The full-data interpretation model includes camera site as a
-# categorical predictor to represent persistent differences
-# among camera locations.
+#   Trees = 500
+#   mtry = 3
+#   Minimum node size = 20
+#   Split rule = Poisson
 #
-# PM2.5 response is evaluated using Accumulated Local Effects
-# (ALE).
+# The model is fit using all cleaned moose observations for
+# interpretation.
 #
-# A later permutation test will determine whether the observed
-# PM2.5 response is stronger than responses that arise after
-# randomizing PM2.5.
+# The PM2.5 response is summarized using:
+#
+#   1. Accumulated Local Effects (ALE)
+#   2. Raw observed daily counts within the same PM2.5 bins
+#
+# ALE shows the modeled association with PM2.5 after accounting
+# for the other predictors in the Random Forest.
+#
+# It does not establish a causal effect of smoke.
 #
 # ============================================================
-
 
 
 # ------------------------------------------------------------
@@ -31,9 +36,7 @@
 # ------------------------------------------------------------
 
 library(ranger)
-
 library(ggplot2)
-
 
 
 # ------------------------------------------------------------
@@ -43,7 +46,6 @@ library(ggplot2)
 moose <- read.csv(
   "data-split/moose_model_data.csv"
 )
-
 
 
 # ------------------------------------------------------------
@@ -67,18 +69,16 @@ moose$Cell_ID <- as.factor(
 )
 
 
-
 # ============================================================
 # SELECT MODEL VARIABLES
 # ============================================================
 
 
-
 # ------------------------------------------------------------
-# 4. Keep variables used in the daily-count model
+# 4. Keep the finalized model variables
 # ------------------------------------------------------------
 
-moose.rf.data <- moose[
+moose.model.data <- moose[
   ,
   c(
     "Cell_ID",
@@ -97,38 +97,40 @@ moose.rf.data <- moose[
 ]
 
 
-
 # ------------------------------------------------------------
 # 5. Remove incomplete observations
 # ------------------------------------------------------------
 
-moose.rf.data <- moose.rf.data[
+moose.model.data <- moose.model.data[
   complete.cases(
-    moose.rf.data
+    moose.model.data
   ),
 ]
 
 
-
 # ============================================================
-# FIT FULL DAILY-COUNT RANDOM FOREST
+# FIT FULL-DATA INTERPRETATION MODEL
 # ============================================================
-
 
 
 # ------------------------------------------------------------
-# 6. Fit full-data Random Forest
+# 6. Fit finalized Poisson Random Forest
 # ------------------------------------------------------------
 
-moose.daily.rf.full <- ranger(
+set.seed(42)
+
+moose.rf.full <- ranger(
   
   Daily_Count ~ .,
   
   data =
-    moose.rf.data,
+    moose.model.data,
   
   num.trees =
     500,
+  
+  mtry =
+    3,
   
   min.node.size =
     20,
@@ -150,119 +152,135 @@ moose.daily.rf.full <- ranger(
 )
 
 
-
-# ------------------------------------------------------------
-# 7. Print model summary
-# ------------------------------------------------------------
-
 cat(
   "\n====================================================\n"
 )
 
 cat(
-  "FULL MOOSE DAILY-COUNT RANDOM FOREST\n"
+  "MOOSE FULL-DATA INTERPRETATION MODEL\n"
 )
 
 cat(
   "====================================================\n"
 )
 
-print(
-  moose.daily.rf.full
+cat(
+  "Observations:",
+  nrow(
+    moose.model.data
+  ),
+  "\n"
+)
+
+cat(
+  "Camera sites:",
+  length(
+    unique(
+      moose.model.data$Cell_ID
+    )
+  ),
+  "\n"
+)
+
+cat(
+  "OOB R-squared:",
+  round(
+    moose.rf.full$r.squared,
+    6
+  ),
+  "\n"
 )
 
 
-
 # ============================================================
-# DEFINE PM2.5 INTERPRETATION RANGE
+# DEFINE PM2.5 ANALYSIS RANGE
 # ============================================================
-
 
 
 # ------------------------------------------------------------
-# 8. Calculate PM2.5 limits
+# 7. Use the central 1st through 99th percentile
+#
+# The smoke distribution is strongly right-skewed.
+#
+# Using the central 98% prevents a few extreme observations
+# from dominating the ALE calculation.
 # ------------------------------------------------------------
 
 smoke.lower <- as.numeric(
   quantile(
-    moose.rf.data$scale.smoke,
+    moose.model.data$scale.smoke,
     probs = 0.01,
     na.rm = TRUE
   )
 )
 
-
 smoke.upper <- as.numeric(
   quantile(
-    moose.rf.data$scale.smoke,
+    moose.model.data$scale.smoke,
     probs = 0.99,
     na.rm = TRUE
   )
 )
 
 
-
 cat(
-  "\nPM2.5 interpretation range:\n"
-)
-
-cat(
-  "1st percentile:",
+  "\nPM2.5 1st percentile:",
   smoke.lower,
   "\n"
 )
 
 cat(
-  "99th percentile:",
+  "PM2.5 99th percentile:",
   smoke.upper,
   "\n"
 )
 
 
-
 # ------------------------------------------------------------
-# 9. Restrict data to central PM2.5 range
+# 8. Keep observations inside central PM2.5 range
 # ------------------------------------------------------------
 
-central.data <- moose.rf.data[
-  moose.rf.data$scale.smoke >= smoke.lower &
-    moose.rf.data$scale.smoke <= smoke.upper,
+ale.data <- moose.model.data[
+  moose.model.data$scale.smoke >=
+    smoke.lower &
+    moose.model.data$scale.smoke <=
+    smoke.upper,
 ]
 
 
-
 cat(
-  "\nCentral observations:",
+  "Observations included in ALE:",
   nrow(
-    central.data
+    ale.data
   ),
   "\n"
 )
 
 cat(
-  "Excluded observations:",
+  "Observations excluded from ALE:",
   nrow(
-    moose.rf.data
+    moose.model.data
   ) -
     nrow(
-      central.data
+      ale.data
     ),
   "\n"
 )
 
 
-
 # ============================================================
-# CREATE REFINED ALE BOUNDARIES
+# CREATE PM2.5 BREAKS
 # ============================================================
-
 
 
 # ------------------------------------------------------------
-# 10. Define quantile probabilities
+# 9. Quantile probabilities
+#
+# More breaks are used in the upper part of the distribution
+# because high-smoke observations are less common.
 # ------------------------------------------------------------
 
-ale.probabilities <- c(
+ale.probs <- c(
   0.01,
   0.05,
   0.10,
@@ -291,32 +309,33 @@ ale.probabilities <- c(
 )
 
 
-
 # ------------------------------------------------------------
-# 11. Create unique PM2.5 boundaries
+# 10. Convert probabilities into actual PM2.5 values
 # ------------------------------------------------------------
 
-ale.breaks <- as.numeric(
+smoke.breaks <- as.numeric(
   quantile(
-    central.data$scale.smoke,
+    moose.model.data$scale.smoke,
     probs =
-      ale.probabilities,
+      ale.probs,
     na.rm =
       TRUE
   )
 )
 
 
-ale.breaks <- unique(
-  ale.breaks
+# Remove duplicate breaks if multiple quantiles have the same
+# smoke value.
+
+smoke.breaks <- unique(
+  smoke.breaks
 )
 
 
-
 cat(
-  "Number of ALE boundaries:",
+  "\nNumber of unique PM2.5 breaks:",
   length(
-    ale.breaks
+    smoke.breaks
   ),
   "\n"
 )
@@ -324,359 +343,313 @@ cat(
 cat(
   "Number of ALE intervals:",
   length(
-    ale.breaks
+    smoke.breaks
   ) - 1,
   "\n"
 )
 
 
-
 # ============================================================
-# ALE FUNCTION
+# CUSTOM ALE CALCULATION
 # ============================================================
-
 
 
 # ------------------------------------------------------------
-# 12. Define regression ALE function
+# 11. Create empty storage
 # ------------------------------------------------------------
 
-calculate_regression_ale <- function(
-    model,
-    data,
-    breaks,
-    variable = "scale.smoke"
+ale.intervals <- data.frame(
+  
+  Lower =
+    numeric(),
+  
+  Upper =
+    numeric(),
+  
+  Midpoint =
+    numeric(),
+  
+  N =
+    integer(),
+  
+  Local_Effect =
+    numeric(),
+  
+  stringsAsFactors =
+    FALSE
+)
+
+
+# ------------------------------------------------------------
+# 12. Calculate local effects for every PM2.5 interval
+# ------------------------------------------------------------
+
+for (
+  i in 1:(
+    length(
+      smoke.breaks
+    ) - 1
+  )
 ) {
   
-  x <- data[[variable]]
+  lower.value <- smoke.breaks[i]
+  
+  upper.value <- smoke.breaks[i + 1]
   
   
-  bin.id <- cut(
-    x,
-    breaks =
-      breaks,
-    include.lowest =
-      TRUE,
-    labels =
-      FALSE
-  )
+  # Include observations that actually fall inside this interval.
   
-  
-  number.intervals <-
+  if (
+    i <
     length(
-      breaks
+      smoke.breaks
     ) - 1
-  
-  
-  local.effects <- numeric(
-    number.intervals
-  )
-  
-  
-  observations.per.bin <- integer(
-    number.intervals
-  )
-  
-  
-  for (
-    b in 1:number.intervals
   ) {
     
-    rows.in.bin <- which(
-      bin.id == b
+    interval.rows <- which(
+      
+      ale.data$scale.smoke >=
+        lower.value &
+        
+        ale.data$scale.smoke <
+        upper.value
     )
     
+  } else {
     
-    observations.per.bin[b] <-
-      length(
-        rows.in.bin
-      )
-    
-    
-    if (
-      length(
-        rows.in.bin
-      ) == 0
-    ) {
+    interval.rows <- which(
       
-      local.effects[b] <- NA
-      
-      next
-    }
-    
-    
-    lower.data <- data[
-      rows.in.bin,
-      ,
-      drop = FALSE
-    ]
-    
-    
-    upper.data <- data[
-      rows.in.bin,
-      ,
-      drop = FALSE
-    ]
-    
-    
-    lower.data[[variable]] <-
-      breaks[b]
-    
-    
-    upper.data[[variable]] <-
-      breaks[b + 1]
-    
-    
-    lower.prediction <- predict(
-      model,
-      data =
-        lower.data
-    )$predictions
-    
-    
-    upper.prediction <- predict(
-      model,
-      data =
-        upper.data
-    )$predictions
-    
-    
-    local.effects[b] <- mean(
-      upper.prediction -
-        lower.prediction
+      ale.data$scale.smoke >=
+        lower.value &
+        
+        ale.data$scale.smoke <=
+        upper.value
     )
   }
   
   
-  valid <- !is.na(
-    local.effects
-  )
+  # Skip empty intervals.
+  
+  if (
+    length(
+      interval.rows
+    ) == 0
+  ) {
+    
+    next
+  }
   
   
-  effects.valid <- local.effects[
-    valid
+  interval.data <- ale.data[
+    interval.rows,
   ]
   
   
-  observations.valid <-
-    observations.per.bin[
-      valid
-    ]
+  # Create two copies of the same observations.
+  #
+  # In one copy, PM2.5 is set to the lower boundary.
+  # In the other, it is set to the upper boundary.
+  
+  lower.data <- interval.data
+  
+  upper.data <- interval.data
   
   
-  accumulated <- cumsum(
-    effects.valid
+  lower.data$scale.smoke <-
+    lower.value
+  
+  upper.data$scale.smoke <-
+    upper.value
+  
+  
+  # Predict at the lower boundary.
+  
+  lower.pred <- predict(
+    
+    moose.rf.full,
+    
+    data =
+      lower.data
+    
+  )$predictions
+  
+  
+  # Predict at the upper boundary.
+  
+  upper.pred <- predict(
+    
+    moose.rf.full,
+    
+    data =
+      upper.data
+    
+  )$predictions
+  
+  
+  # Average prediction change inside this interval.
+  
+  local.effect <- mean(
+    upper.pred -
+      lower.pred
   )
   
   
-  center.value <- weighted.mean(
-    accumulated,
-    w =
-      observations.valid
-  )
+  # Store interval results.
   
-  
-  centered.ale <-
-    accumulated -
-    center.value
-  
-  
-  results <- data.frame(
+  ale.intervals <- rbind(
     
-    Lower_PM25 =
-      breaks[
-        1:number.intervals
-      ][
-        valid
-      ],
+    ale.intervals,
     
-    Upper_PM25 =
-      breaks[
-        2:(number.intervals + 1)
-      ][
-        valid
-      ],
-    
-    Observations =
-      observations.valid,
-    
-    Local_Effect =
-      effects.valid,
-    
-    ALE =
-      centered.ale
-  )
-  
-  
-  return(
-    results
+    data.frame(
+      
+      Lower =
+        lower.value,
+      
+      Upper =
+        upper.value,
+      
+      Midpoint =
+        (
+          lower.value +
+            upper.value
+        ) / 2,
+      
+      N =
+        length(
+          interval.rows
+        ),
+      
+      Local_Effect =
+        local.effect
+    )
   )
 }
 
 
-
 # ============================================================
-# CALCULATE PM2.5 ALE
+# ACCUMULATE LOCAL EFFECTS
 # ============================================================
-
 
 
 # ------------------------------------------------------------
-# 13. Calculate ALE
+# 13. Cumulative ALE
 # ------------------------------------------------------------
 
-moose.ale <- calculate_regression_ale(
-  
-  model =
-    moose.daily.rf.full,
-  
-  data =
-    central.data,
-  
-  breaks =
-    ale.breaks
+ale.intervals$ALE_Raw <- cumsum(
+  ale.intervals$Local_Effect
 )
 
 
+# ------------------------------------------------------------
+# 14. Center the ALE curve around zero
+#
+# ALE values are relative model effects, not predicted counts.
+#
+# Zero represents the average modeled PM2.5 effect.
+# ------------------------------------------------------------
+
+ale.weights <- ale.intervals$N /
+  sum(
+    ale.intervals$N
+  )
+
+
+ale.center <- sum(
+  ale.intervals$ALE_Raw *
+    ale.weights
+)
+
+
+ale.intervals$ALE <- (
+  ale.intervals$ALE_Raw -
+    ale.center
+)
+
+
+# ============================================================
+# ALE SUMMARY
+# ============================================================
+
 
 # ------------------------------------------------------------
-# 14. Print ALE table
+# 15. Overall low-to-high PM2.5 change
 # ------------------------------------------------------------
+
+overall.ale.change <- (
+  tail(
+    ale.intervals$ALE,
+    1
+  ) -
+    head(
+      ale.intervals$ALE,
+      1
+    )
+)
+
+
+# ------------------------------------------------------------
+# 16. Largest local PM2.5 change
+# ------------------------------------------------------------
+
+largest.local.row <- which.max(
+  abs(
+    ale.intervals$Local_Effect
+  )
+)
+
+
+largest.local.effect <-
+  ale.intervals$Local_Effect[
+    largest.local.row
+  ]
+
+
+largest.local.lower <-
+  ale.intervals$Lower[
+    largest.local.row
+  ]
+
+
+largest.local.upper <-
+  ale.intervals$Upper[
+    largest.local.row
+  ]
+
+
+# ------------------------------------------------------------
+# 17. Percentage of observations in largest interval
+# ------------------------------------------------------------
+
+largest.interval.percent <- (
+  ale.intervals$N[
+    largest.local.row
+  ] /
+    sum(
+      ale.intervals$N
+    )
+) * 100
+
 
 cat(
   "\n====================================================\n"
 )
 
 cat(
-  "MOOSE DAILY-COUNT PM2.5 ALE\n"
+  "MOOSE PM2.5 ALE SUMMARY\n"
 )
 
 cat(
   "====================================================\n"
 )
 
-
-print(
-  moose.ale
-)
-
-
-
-# ============================================================
-# ALE DIRECTION
-# ============================================================
-
-
-
-# ------------------------------------------------------------
-# 15. Calculate low-to-high ALE change
-# ------------------------------------------------------------
-
-ale.low.to.high <-
-  
-  moose.ale$ALE[
-    nrow(
-      moose.ale
-    )
-  ] -
-  
-  moose.ale$ALE[
-    1
-  ]
-
-
-
 cat(
-  "\nALE low-to-high change:",
+  "Overall ALE low-to-high change:",
   round(
-    ale.low.to.high,
+    overall.ale.change,
     6
   ),
   "\n"
 )
-
-
-
-# ------------------------------------------------------------
-# 16. Determine PM2.5 response direction
-# ------------------------------------------------------------
-
-if (
-  ale.low.to.high < 0
-) {
-  
-  ale.direction <-
-    "NEGATIVE"
-  
-} else if (
-  ale.low.to.high > 0
-) {
-  
-  ale.direction <-
-    "POSITIVE"
-  
-} else {
-  
-  ale.direction <-
-    "FLAT"
-}
-
-
-
-cat(
-  "ALE direction:",
-  ale.direction,
-  "\n"
-)
-
-
-
-# ============================================================
-# CHECK WHETHER ONE INTERVAL DOMINATES
-# ============================================================
-
-
-
-# ------------------------------------------------------------
-# 17. Largest absolute local effect
-# ------------------------------------------------------------
-
-largest.local.effect <- max(
-  abs(
-    moose.ale$Local_Effect
-  ),
-  na.rm =
-    TRUE
-)
-
-
-
-# ------------------------------------------------------------
-# 18. Total absolute ALE movement
-# ------------------------------------------------------------
-
-total.absolute.movement <- sum(
-  abs(
-    moose.ale$Local_Effect
-  ),
-  na.rm =
-    TRUE
-)
-
-
-
-# ------------------------------------------------------------
-# 19. Largest interval contribution
-# ------------------------------------------------------------
-
-largest.interval.percent <- (
-  
-  largest.local.effect /
-    total.absolute.movement
-  
-) * 100
-
-
 
 cat(
   "Largest local effect:",
@@ -687,17 +660,28 @@ cat(
   "\n"
 )
 
+cat(
+  "Largest-effect interval:",
+  round(
+    largest.local.lower,
+    4
+  ),
+  "to",
+  round(
+    largest.local.upper,
+    4
+  ),
+  "\n"
+)
 
 cat(
-  "Largest interval contribution:",
+  "Observations in largest-effect interval:",
   round(
     largest.interval.percent,
     2
   ),
-  "%",
-  "\n"
+  "%\n"
 )
-
 
 
 # ============================================================
@@ -705,135 +689,182 @@ cat(
 # ============================================================
 
 
-
 # ------------------------------------------------------------
-# 20. Assign observations to PM2.5 intervals
+# 18. Assign every observation to the ALE bins
 # ------------------------------------------------------------
 
-central.data$Smoke_Bin <- cut(
+observed.data <- ale.data
+
+
+observed.data$PM25_Bin <- cut(
   
-  central.data$scale.smoke,
+  observed.data$scale.smoke,
   
   breaks =
-    ale.breaks,
+    smoke.breaks,
   
   include.lowest =
     TRUE,
   
-  labels =
-    FALSE
+  right =
+    TRUE
 )
 
 
+# ------------------------------------------------------------
+# 19. Remove observations that could not be assigned
+# ------------------------------------------------------------
+
+observed.data <- observed.data[
+  !is.na(
+    observed.data$PM25_Bin
+  ),
+]
+
 
 # ------------------------------------------------------------
-# 21. Calculate observed daily-count summaries
+# 20. Summarize observed counts by PM2.5 bin
 # ------------------------------------------------------------
 
-observed.counts <- do.call(
+observed.summary <- aggregate(
   
-  rbind,
+  cbind(
+    Daily_Count,
+    scale.smoke
+  ) ~ PM25_Bin,
   
-  lapply(
-    
-    sort(
-      unique(
-        central.data$Smoke_Bin[
-          !is.na(
-            central.data$Smoke_Bin
-          )
-        ]
-      )
-    ),
-    
-    function(
-    b
-    ) {
-      
-      rows <- which(
-        central.data$Smoke_Bin ==
-          b
-      )
-      
-      
-      temp <- central.data[
-        rows,
-        ,
-        drop = FALSE
-      ]
-      
-      
-      data.frame(
-        
-        Bin =
-          b,
-        
-        Mean_PM25 =
-          mean(
-            temp$scale.smoke,
-            na.rm = TRUE
-          ),
-        
-        Observations =
-          nrow(
-            temp
-          ),
-        
-        Mean_Daily_Count =
-          mean(
-            temp$Daily_Count,
-            na.rm = TRUE
-          ),
-        
-        Total_Detections =
-          sum(
-            temp$Daily_Count,
-            na.rm = TRUE
-          ),
-        
-        Positive_Detection_Rate =
-          mean(
-            temp$Daily_Count > 0,
-            na.rm = TRUE
-          )
-      )
-    }
-  )
+  data =
+    observed.data,
+  
+  FUN =
+    mean
 )
 
 
+names(
+  observed.summary
+)[
+  names(
+    observed.summary
+  ) ==
+    "Daily_Count"
+] <- "Mean_Daily_Count"
+
+
+names(
+  observed.summary
+)[
+  names(
+    observed.summary
+  ) ==
+    "scale.smoke"
+] <- "Mean_PM25"
+
 
 # ------------------------------------------------------------
-# 22. Print observed count table
+# 21. Number of camera-days per bin
 # ------------------------------------------------------------
+
+bin.n <- aggregate(
+  
+  Daily_Count ~ PM25_Bin,
+  
+  data =
+    observed.data,
+  
+  FUN =
+    length
+)
+
+
+names(
+  bin.n
+)[2] <- "N"
+
+
+# ------------------------------------------------------------
+# 22. Total detections per bin
+# ------------------------------------------------------------
+
+bin.total <- aggregate(
+  
+  Daily_Count ~ PM25_Bin,
+  
+  data =
+    observed.data,
+  
+  FUN =
+    sum
+)
+
+
+names(
+  bin.total
+)[2] <- "Total_Detections"
+
+
+# ------------------------------------------------------------
+# 23. Combine raw summaries
+# ------------------------------------------------------------
+
+observed.summary <- merge(
+  
+  observed.summary,
+  
+  bin.n,
+  
+  by =
+    "PM25_Bin"
+)
+
+
+observed.summary <- merge(
+  
+  observed.summary,
+  
+  bin.total,
+  
+  by =
+    "PM25_Bin"
+)
+
+
+observed.summary <- observed.summary[
+  order(
+    observed.summary$Mean_PM25
+  ),
+]
+
+
+rownames(
+  observed.summary
+) <- NULL
+
 
 cat(
   "\n====================================================\n"
 )
 
 cat(
-  "OBSERVED MOOSE DAILY COUNTS BY PM2.5\n"
+  "OBSERVED DAILY COUNTS BY PM2.5 BIN\n"
 )
 
 cat(
   "====================================================\n"
 )
 
-
 print(
-  observed.counts
+  observed.summary
 )
 
 
-
 # ============================================================
-# SAVE RESULTS
+# CREATE RESULTS DIRECTORY
 # ============================================================
-
 
 
 # ------------------------------------------------------------
-# 23. Create results directory
+# 24. Create results folder if needed
 # ------------------------------------------------------------
 
 dir.create(
@@ -845,14 +876,18 @@ dir.create(
 )
 
 
+# ============================================================
+# SAVE ALE RESULTS
+# ============================================================
+
 
 # ------------------------------------------------------------
-# 24. Save ALE table
+# 25. Save detailed ALE table
 # ------------------------------------------------------------
 
 write.csv(
   
-  moose.ale,
+  ale.intervals,
   
   "results/Moose_Daily_Count_PM25_ALE.csv",
   
@@ -861,61 +896,34 @@ write.csv(
 )
 
 
-
 # ------------------------------------------------------------
-# 25. Save observed daily-count summaries
-# ------------------------------------------------------------
-
-write.csv(
-  
-  observed.counts,
-  
-  "results/Moose_Observed_Daily_Counts_By_PM25.csv",
-  
-  row.names =
-    FALSE
-)
-
-
-
-# ------------------------------------------------------------
-# 26. Create summary table
+# 26. Save ALE summary
 # ------------------------------------------------------------
 
 ale.summary <- data.frame(
-  
-  Species =
-    "Moose",
-  
-  ALE_Low_to_High_Change =
-    ale.low.to.high,
-  
-  ALE_Direction =
-    ale.direction,
-  
-  Largest_Local_Effect =
-    largest.local.effect,
-  
-  Largest_Interval_Percent =
-    largest.interval.percent,
-  
-  Central_Observations =
-    nrow(
-      central.data
-    ),
   
   PM25_1st_Percentile =
     smoke.lower,
   
   PM25_99th_Percentile =
-    smoke.upper
+    smoke.upper,
+  
+  Overall_ALE_Change =
+    overall.ale.change,
+  
+  Largest_Local_Effect =
+    largest.local.effect,
+  
+  Largest_Effect_Lower =
+    largest.local.lower,
+  
+  Largest_Effect_Upper =
+    largest.local.upper,
+  
+  Largest_Interval_Percent =
+    largest.interval.percent
 )
 
-
-
-# ------------------------------------------------------------
-# 27. Save summary table
-# ------------------------------------------------------------
 
 write.csv(
   
@@ -928,33 +936,45 @@ write.csv(
 )
 
 
+# ------------------------------------------------------------
+# 27. Save observed-count summary
+# ------------------------------------------------------------
+
+write.csv(
+  
+  observed.summary,
+  
+  "results/Moose_Observed_Daily_Counts_By_PM25.csv",
+  
+  row.names =
+    FALSE
+)
+
 
 # ============================================================
-# PLOT 1:
-# RANDOM FOREST ALE
+# ALE PLOT
 # ============================================================
+
+
+# ------------------------------------------------------------
+# 28. Plot ALE relationship
+# ------------------------------------------------------------
 
 ale.plot <- ggplot(
   
-  moose.ale,
+  ale.intervals,
   
   aes(
     x =
-      Upper_PM25,
+      Midpoint,
+    
     y =
       ALE
   )
   
 ) +
   
-  geom_hline(
-    yintercept =
-      0,
-    linetype =
-      "dashed"
-  ) +
-  
-  geom_step(
+  geom_line(
     linewidth =
       1
   ) +
@@ -964,23 +984,31 @@ ale.plot <- ggplot(
       2
   ) +
   
+  geom_hline(
+    
+    yintercept =
+      0,
+    
+    linetype =
+      "dashed"
+  ) +
+  
   labs(
     
     title =
-      "Moose Daily-Count Response to Wildfire PM2.5",
+      "Moose PM2.5 Accumulated Local Effects",
     
     subtitle =
-      "Accumulated Local Effects",
+      "Random Forest modeled association with daily detection count",
     
     x =
-      "Wildfire-attributable PM2.5 (scaled)",
+      "Standardized Wildfire-Attributable PM2.5",
     
     y =
-      "ALE Effect on Predicted Daily Count"
+      "Accumulated Local Effect"
   ) +
   
   theme_minimal()
-
 
 
 print(
@@ -988,6 +1016,9 @@ print(
 )
 
 
+# ------------------------------------------------------------
+# 29. Save ALE plot
+# ------------------------------------------------------------
 
 ggsave(
   
@@ -1008,19 +1039,23 @@ ggsave(
 )
 
 
+# ============================================================
+# OBSERVED COUNT PLOT
+# ============================================================
 
-# ============================================================
-# PLOT 2:
-# OBSERVED MEAN DAILY COUNT
-# ============================================================
+
+# ------------------------------------------------------------
+# 30. Plot raw observed counts
+# ------------------------------------------------------------
 
 observed.plot <- ggplot(
   
-  observed.counts,
+  observed.summary,
   
   aes(
     x =
       Mean_PM25,
+    
     y =
       Mean_Daily_Count
   )
@@ -1040,13 +1075,13 @@ observed.plot <- ggplot(
   labs(
     
     title =
-      "Observed Moose Daily Counts by Wildfire PM2.5",
+      "Observed Moose Daily Counts by PM2.5",
     
     subtitle =
-      "Mean daily detections within PM2.5 intervals",
+      "Raw mean daily detections within PM2.5 bins",
     
     x =
-      "Mean Wildfire-attributable PM2.5 (scaled)",
+      "Mean Standardized Wildfire-Attributable PM2.5",
     
     y =
       "Observed Mean Daily Count"
@@ -1055,12 +1090,14 @@ observed.plot <- ggplot(
   theme_minimal()
 
 
-
 print(
   observed.plot
 )
 
 
+# ------------------------------------------------------------
+# 31. Save observed-count plot
+# ------------------------------------------------------------
 
 ggsave(
   
@@ -1081,7 +1118,6 @@ ggsave(
 )
 
 
-
 # ============================================================
 # FINAL SUMMARY
 # ============================================================
@@ -1091,59 +1127,51 @@ cat(
 )
 
 cat(
-  "MOOSE DAILY-COUNT PM2.5 ALE SUMMARY\n"
+  "FINAL MOOSE ALE SUMMARY\n"
 )
 
 cat(
   "====================================================\n"
 )
 
-
 cat(
-  "Central observations:",
-  nrow(
-    central.data
-  ),
-  "\n"
+  "Trees: 500\n"
 )
 
+cat(
+  "mtry: 3\n"
+)
 
 cat(
-  "PM2.5 1st percentile:",
+  "Minimum node size: 20\n"
+)
+
+cat(
+  "Split rule: Poisson\n"
+)
+
+cat(
+  "\nPM2.5 range:",
   round(
     smoke.lower,
-    6
+    4
   ),
-  "\n"
-)
-
-
-cat(
-  "PM2.5 99th percentile:",
+  "to",
   round(
     smoke.upper,
-    6
+    4
   ),
   "\n"
 )
 
-
 cat(
-  "ALE low-to-high change:",
+  "Overall ALE change:",
   round(
-    ale.low.to.high,
+    overall.ale.change,
     6
   ),
   "\n"
 )
-
-
-cat(
-  "ALE direction:",
-  ale.direction,
-  "\n"
-)
-
 
 cat(
   "Largest local effect:",
@@ -1153,18 +1181,6 @@ cat(
   ),
   "\n"
 )
-
-
-cat(
-  "Largest interval contribution:",
-  round(
-    largest.interval.percent,
-    2
-  ),
-  "%",
-  "\n"
-)
-
 
 cat(
   "====================================================\n"

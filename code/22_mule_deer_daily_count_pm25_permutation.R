@@ -1,56 +1,41 @@
 # ============================================================
-# 22_mule_deer_daily_count_pm25_permutation.R
+# 22_mule_deer_pm25_daily_count_permutation.R
 #
-# MULE DEER DAILY-COUNT PM2.5 PERMUTATION TEST
+# MULE DEER PM2.5 PERMUTATION TEST
 #
 # PURPOSE:
 #
-# Test whether the PM2.5 response learned by the Random Forest
-# is stronger than responses produced when PM2.5 is randomly
-# reassigned among camera-days.
+# Test whether the PM2.5 relationship found by the Random
+# Forest is stronger than relationships that can appear when
+# PM2.5 is randomly rearranged.
 #
+# Final Random Forest settings:
 #
-# TWO RESPONSE STATISTICS ARE TESTED:
+#   Trees = 500
+#   mtry = 3
+#   Minimum node size = 20
+#   Split rule = Poisson
 #
-# 1. Overall ALE change
+# The observed PM2.5 relationship is measured using ALE.
 #
-#    Change in ALE from the low end to the high end of the
-#    central PM2.5 range.
+# PM2.5 is then randomly shuffled, the model is refit, and a
+# new ALE response is calculated.
 #
-#
-# 2. Upper-tail ALE change
-#
-#    Accumulated PM2.5 effect from the 90th through 99th
-#    percentile of observed smoke.
-#
-#
-# The same model structure, ALE boundaries, and settings are
-# used for the observed and randomized models.
+# The observed ALE response is compared with the distribution
+# of ALE responses from randomized PM2.5 values.
 #
 # ============================================================
 
 
-
 # ------------------------------------------------------------
-# 1. Load required packages
+# 1. Load required package
 # ------------------------------------------------------------
 
 library(ranger)
 
-library(ggplot2)
-
-
 
 # ------------------------------------------------------------
-# 2. Set number of permutations
-# ------------------------------------------------------------
-
-number.runs <- 30
-
-
-
-# ------------------------------------------------------------
-# 3. Load cleaned mule deer dataset
+# 2. Load cleaned mule deer dataset
 # ------------------------------------------------------------
 
 mule <- read.csv(
@@ -58,9 +43,8 @@ mule <- read.csv(
 )
 
 
-
 # ------------------------------------------------------------
-# 4. Restore categorical variables
+# 3. Restore categorical variables
 # ------------------------------------------------------------
 
 mule$Road_Type <- as.factor(
@@ -80,18 +64,16 @@ mule$Cell_ID <- as.factor(
 )
 
 
-
 # ============================================================
 # SELECT MODEL VARIABLES
 # ============================================================
 
 
-
 # ------------------------------------------------------------
-# 5. Keep variables used in the daily-count model
+# 4. Keep finalized predictor set
 # ------------------------------------------------------------
 
-mule.rf.data <- mule[
+mule.model.data <- mule[
   ,
   c(
     "Cell_ID",
@@ -110,111 +92,48 @@ mule.rf.data <- mule[
 ]
 
 
-
 # ------------------------------------------------------------
-# 6. Remove incomplete observations
+# 5. Remove incomplete observations
 # ------------------------------------------------------------
 
-mule.rf.data <- mule.rf.data[
+mule.model.data <- mule.model.data[
   complete.cases(
-    mule.rf.data
+    mule.model.data
   ),
 ]
 
 
-
 # ============================================================
-# DEFINE FIXED PM2.5 RANGE AND ALE BOUNDARIES
+# DEFINE PM2.5 RANGE AND ALE BREAKS
 # ============================================================
-
 
 
 # ------------------------------------------------------------
-# 7. Calculate central PM2.5 range
+# 6. Use 1st through 99th percentile PM2.5 range
 # ------------------------------------------------------------
 
 smoke.lower <- as.numeric(
   quantile(
-    mule.rf.data$scale.smoke,
+    mule.model.data$scale.smoke,
     probs = 0.01,
     na.rm = TRUE
   )
 )
 
-
 smoke.upper <- as.numeric(
   quantile(
-    mule.rf.data$scale.smoke,
+    mule.model.data$scale.smoke,
     probs = 0.99,
     na.rm = TRUE
   )
 )
 
 
-
 # ------------------------------------------------------------
-# 8. Define upper-tail threshold
-# ------------------------------------------------------------
-
-high.smoke.threshold <- as.numeric(
-  quantile(
-    mule.rf.data$scale.smoke,
-    probs = 0.90,
-    na.rm = TRUE
-  )
-)
-
-
-
-cat(
-  "\n====================================================\n"
-)
-
-cat(
-  "PM2.5 ANALYSIS RANGE\n"
-)
-
-cat(
-  "====================================================\n"
-)
-
-
-cat(
-  "1st percentile:",
-  smoke.lower,
-  "\n"
-)
-
-cat(
-  "90th percentile:",
-  high.smoke.threshold,
-  "\n"
-)
-
-cat(
-  "99th percentile:",
-  smoke.upper,
-  "\n"
-)
-
-
-
-# ------------------------------------------------------------
-# 9. Restrict original data to central PM2.5 range
+# 7. Define ALE quantile probabilities
 # ------------------------------------------------------------
 
-central.data <- mule.rf.data[
-  mule.rf.data$scale.smoke >= smoke.lower &
-    mule.rf.data$scale.smoke <= smoke.upper,
-]
-
-
-
-# ------------------------------------------------------------
-# 10. Define refined quantile probabilities
-# ------------------------------------------------------------
-
-ale.probabilities <- c(
+ale.probs <- c(
   0.01,
   0.05,
   0.10,
@@ -243,34 +162,24 @@ ale.probabilities <- c(
 )
 
 
-
 # ------------------------------------------------------------
-# 11. Create fixed ALE boundaries
+# 8. Convert quantiles to PM2.5 break values
 # ------------------------------------------------------------
 
-ale.breaks <- as.numeric(
+smoke.breaks <- as.numeric(
   quantile(
-    central.data$scale.smoke,
-    probs = ale.probabilities,
-    na.rm = TRUE
+    mule.model.data$scale.smoke,
+    probs =
+      ale.probs,
+    na.rm =
+      TRUE
   )
 )
 
 
-ale.breaks <- unique(
-  ale.breaks
+smoke.breaks <- unique(
+  smoke.breaks
 )
-
-
-
-cat(
-  "ALE intervals:",
-  length(
-    ale.breaks
-  ) - 1,
-  "\n"
-)
-
 
 
 # ============================================================
@@ -278,424 +187,31 @@ cat(
 # ============================================================
 
 
-
 # ------------------------------------------------------------
-# 12. Define regression ALE function
+# 9. Function to calculate PM2.5 ALE
 # ------------------------------------------------------------
 
-calculate_regression_ale <- function(
-    model,
-    data,
-    breaks,
-    variable = "scale.smoke"
+calculate_pm25_ale <- function(
+    model.data,
+    seed.value
 ) {
   
-  x <- data[[variable]]
+  # ----------------------------------------------------------
+  # Fit Random Forest
+  # ----------------------------------------------------------
   
-  
-  bin.id <- cut(
-    x,
-    breaks = breaks,
-    include.lowest = TRUE,
-    labels = FALSE
-  )
-  
-  
-  number.intervals <-
-    length(
-      breaks
-    ) - 1
-  
-  
-  local.effects <- numeric(
-    number.intervals
-  )
-  
-  
-  observations.per.bin <- integer(
-    number.intervals
-  )
-  
-  
-  for (
-    b in 1:number.intervals
-  ) {
-    
-    rows.in.bin <- which(
-      bin.id == b
-    )
-    
-    
-    observations.per.bin[b] <-
-      length(
-        rows.in.bin
-      )
-    
-    
-    if (
-      length(
-        rows.in.bin
-      ) == 0
-    ) {
-      
-      local.effects[b] <- NA
-      
-      next
-    }
-    
-    
-    lower.data <- data[
-      rows.in.bin,
-      ,
-      drop = FALSE
-    ]
-    
-    
-    upper.data <- data[
-      rows.in.bin,
-      ,
-      drop = FALSE
-    ]
-    
-    
-    lower.data[[variable]] <-
-      breaks[b]
-    
-    
-    upper.data[[variable]] <-
-      breaks[b + 1]
-    
-    
-    lower.prediction <- predict(
-      model,
-      data = lower.data
-    )$predictions
-    
-    
-    upper.prediction <- predict(
-      model,
-      data = upper.data
-    )$predictions
-    
-    
-    local.effects[b] <- mean(
-      upper.prediction -
-        lower.prediction
-    )
-  }
-  
-  
-  valid <- !is.na(
-    local.effects
-  )
-  
-  
-  effects.valid <-
-    local.effects[
-      valid
-    ]
-  
-  
-  observations.valid <-
-    observations.per.bin[
-      valid
-    ]
-  
-  
-  accumulated <- cumsum(
-    effects.valid
-  )
-  
-  
-  center.value <- weighted.mean(
-    accumulated,
-    w = observations.valid
-  )
-  
-  
-  centered.ale <-
-    accumulated -
-    center.value
-  
-  
-  results <- data.frame(
-    
-    Lower_PM25 =
-      breaks[
-        1:number.intervals
-      ][valid],
-    
-    Upper_PM25 =
-      breaks[
-        2:(number.intervals + 1)
-      ][valid],
-    
-    Observations =
-      observations.valid,
-    
-    Local_Effect =
-      effects.valid,
-    
-    ALE =
-      centered.ale
-  )
-  
-  
-  return(
-    results
-  )
-}
-
-
-
-# ============================================================
-# RESPONSE-STATISTIC FUNCTION
-# ============================================================
-
-
-
-# ------------------------------------------------------------
-# 13. Calculate ALE summary statistics
-# ------------------------------------------------------------
-
-calculate_ale_statistics <- function(
-    ale.table,
-    high.threshold
-) {
-  
-  overall.change <-
-    
-    ale.table$ALE[
-      nrow(
-        ale.table
-      )
-    ] -
-    
-    ale.table$ALE[
-      1
-    ]
-  
-  
-  upper.rows <- which(
-    ale.table$Lower_PM25 >=
-      high.threshold
-  )
-  
-  
-  if (
-    length(
-      upper.rows
-    ) == 0
-  ) {
-    
-    upper.change <- NA
-    
-  } else {
-    
-    upper.change <- sum(
-      ale.table$Local_Effect[
-        upper.rows
-      ],
-      na.rm = TRUE
-    )
-  }
-  
-  
-  return(
-    c(
-      Overall_Change =
-        overall.change,
-      
-      Upper_Tail_Change =
-        upper.change
-    )
-  )
-}
-
-
-
-# ============================================================
-# OBSERVED RANDOM FOREST
-# ============================================================
-
-
-
-# ------------------------------------------------------------
-# 14. Fit observed model
-# ------------------------------------------------------------
-
-set.seed(42)
-
-
-observed.rf <- ranger(
-  
-  Daily_Count ~ .,
-  
-  data =
-    mule.rf.data,
-  
-  num.trees =
-    500,
-  
-  min.node.size =
-    20,
-  
-  splitrule =
-    "poisson",
-  
-  poisson.tau =
-    1,
-  
-  importance =
-    "permutation",
-  
-  respect.unordered.factors =
-    "order",
-  
-  seed =
-    42
-)
-
-
-
-# ------------------------------------------------------------
-# 15. Calculate observed ALE
-# ------------------------------------------------------------
-
-observed.ale <- calculate_regression_ale(
-  
-  model =
-    observed.rf,
-  
-  data =
-    central.data,
-  
-  breaks =
-    ale.breaks
-)
-
-
-
-# ------------------------------------------------------------
-# 16. Calculate observed statistics
-# ------------------------------------------------------------
-
-observed.statistics <- calculate_ale_statistics(
-  
-  ale.table =
-    observed.ale,
-  
-  high.threshold =
-    high.smoke.threshold
-)
-
-
-
-observed.overall <-
-  observed.statistics[
-    "Overall_Change"
-  ]
-
-
-observed.upper <-
-  observed.statistics[
-    "Upper_Tail_Change"
-  ]
-
-
-
-cat(
-  "\n====================================================\n"
-)
-
-cat(
-  "OBSERVED PM2.5 RESPONSE\n"
-)
-
-cat(
-  "====================================================\n"
-)
-
-
-cat(
-  "Overall ALE change:",
-  round(
-    observed.overall,
-    6
-  ),
-  "\n"
-)
-
-
-cat(
-  "Upper-tail ALE change:",
-  round(
-    observed.upper,
-    6
-  ),
-  "\n"
-)
-
-
-
-# ============================================================
-# PERMUTATION TEST
-# ============================================================
-
-
-
-# ------------------------------------------------------------
-# 17. Create result vectors
-# ------------------------------------------------------------
-
-null.overall <- numeric(
-  number.runs
-)
-
-
-null.upper <- numeric(
-  number.runs
-)
-
-
-
-# ------------------------------------------------------------
-# 18. Run PM2.5 permutations
-# ------------------------------------------------------------
-
-for (
-  i in 1:number.runs
-) {
-  
-  set.seed(
-    1000 + i
-  )
-  
-  
-  shuffled.data <- mule.rf.data
-  
-  
-  shuffled.data$scale.smoke <- sample(
-    shuffled.data$scale.smoke,
-    replace = FALSE
-  )
-  
-  
-  shuffled.central <- shuffled.data[
-    shuffled.data$scale.smoke >= smoke.lower &
-      shuffled.data$scale.smoke <= smoke.upper,
-  ]
-  
-  
-  shuffled.rf <- ranger(
+  current.model <- ranger(
     
     Daily_Count ~ .,
     
     data =
-      shuffled.data,
+      model.data,
     
     num.trees =
       500,
+    
+    mtry =
+      3,
     
     min.node.size =
       20,
@@ -713,65 +229,304 @@ for (
       "order",
     
     seed =
-      2000 + i
+      seed.value
   )
   
   
-  shuffled.ale <- calculate_regression_ale(
+  # ----------------------------------------------------------
+  # Restrict to fixed PM2.5 range
+  # ----------------------------------------------------------
+  
+  current.ale.data <- model.data[
+    model.data$scale.smoke >=
+      smoke.lower &
+      model.data$scale.smoke <=
+      smoke.upper,
+  ]
+  
+  
+  # ----------------------------------------------------------
+  # Create empty interval table
+  # ----------------------------------------------------------
+  
+  current.intervals <- data.frame(
     
-    model =
-      shuffled.rf,
+    Lower =
+      numeric(),
     
-    data =
-      shuffled.central,
+    Upper =
+      numeric(),
     
-    breaks =
-      ale.breaks
+    Midpoint =
+      numeric(),
+    
+    N =
+      integer(),
+    
+    Local_Effect =
+      numeric(),
+    
+    stringsAsFactors =
+      FALSE
   )
   
   
-  shuffled.statistics <-
-    calculate_ale_statistics(
+  # ----------------------------------------------------------
+  # Calculate local effect in each PM2.5 interval
+  # ----------------------------------------------------------
+  
+  for (
+    i in 1:(
+      length(
+        smoke.breaks
+      ) - 1
+    )
+  ) {
+    
+    lower.value <-
+      smoke.breaks[i]
+    
+    upper.value <-
+      smoke.breaks[i + 1]
+    
+    
+    if (
+      i <
+      length(
+        smoke.breaks
+      ) - 1
+    ) {
       
-      ale.table =
-        shuffled.ale,
+      interval.rows <- which(
+        
+        current.ale.data$scale.smoke >=
+          lower.value &
+          
+          current.ale.data$scale.smoke <
+          upper.value
+      )
       
-      high.threshold =
-        high.smoke.threshold
+    } else {
+      
+      interval.rows <- which(
+        
+        current.ale.data$scale.smoke >=
+          lower.value &
+          
+          current.ale.data$scale.smoke <=
+          upper.value
+      )
+    }
+    
+    
+    if (
+      length(
+        interval.rows
+      ) == 0
+    ) {
+      
+      next
+    }
+    
+    
+    interval.data <- current.ale.data[
+      interval.rows,
+    ]
+    
+    
+    lower.data <-
+      interval.data
+    
+    upper.data <-
+      interval.data
+    
+    
+    lower.data$scale.smoke <-
+      lower.value
+    
+    upper.data$scale.smoke <-
+      upper.value
+    
+    
+    lower.pred <- predict(
+      
+      current.model,
+      
+      data =
+        lower.data
+      
+    )$predictions
+    
+    
+    upper.pred <- predict(
+      
+      current.model,
+      
+      data =
+        upper.data
+      
+    )$predictions
+    
+    
+    local.effect <- mean(
+      upper.pred -
+        lower.pred
+    )
+    
+    
+    current.intervals <- rbind(
+      
+      current.intervals,
+      
+      data.frame(
+        
+        Lower =
+          lower.value,
+        
+        Upper =
+          upper.value,
+        
+        Midpoint =
+          (
+            lower.value +
+              upper.value
+          ) / 2,
+        
+        N =
+          length(
+            interval.rows
+          ),
+        
+        Local_Effect =
+          local.effect
+      )
+    )
+  }
+  
+  
+  # ----------------------------------------------------------
+  # Accumulate local effects
+  # ----------------------------------------------------------
+  
+  current.intervals$ALE_Raw <- cumsum(
+    current.intervals$Local_Effect
+  )
+  
+  
+  # ----------------------------------------------------------
+  # Center ALE around zero
+  # ----------------------------------------------------------
+  
+  current.weights <- current.intervals$N /
+    sum(
+      current.intervals$N
     )
   
   
-  null.overall[i] <-
-    shuffled.statistics[
-      "Overall_Change"
-    ]
+  current.center <- sum(
+    current.intervals$ALE_Raw *
+      current.weights
+  )
   
   
-  null.upper[i] <-
-    shuffled.statistics[
-      "Upper_Tail_Change"
-    ]
+  current.intervals$ALE <- (
+    current.intervals$ALE_Raw -
+      current.center
+  )
   
   
-  cat(
-    "Completed permutation",
-    i,
-    "of",
-    number.runs,
-    "\n"
+  # ----------------------------------------------------------
+  # Overall low-to-high PM2.5 ALE change
+  # ----------------------------------------------------------
+  
+  overall.change <- (
+    tail(
+      current.intervals$ALE,
+      1
+    ) -
+      head(
+        current.intervals$ALE,
+        1
+      )
+  )
+  
+  
+  # ----------------------------------------------------------
+  # Upper-smoke ALE change
+  #
+  # Compare response from approximately the 90th percentile
+  # through the 99th percentile.
+  # ----------------------------------------------------------
+  
+  upper.start <- as.numeric(
+    quantile(
+      model.data$scale.smoke,
+      probs =
+        0.90,
+      na.rm =
+        TRUE
+    )
+  )
+  
+  
+  upper.rows <- which(
+    current.intervals$Midpoint >=
+      upper.start
+  )
+  
+  
+  if (
+    length(
+      upper.rows
+    ) >= 2
+  ) {
+    
+    upper.change <- (
+      
+      tail(
+        current.intervals$ALE[
+          upper.rows
+        ],
+        1
+      ) -
+        
+        head(
+          current.intervals$ALE[
+            upper.rows
+          ],
+          1
+        )
+    )
+    
+  } else {
+    
+    upper.change <- NA
+  }
+  
+  
+  return(
+    list(
+      
+      intervals =
+        current.intervals,
+      
+      overall.change =
+        overall.change,
+      
+      upper.change =
+        upper.change
+    )
   )
 }
 
 
-
 # ============================================================
-# NULL DISTRIBUTION SUMMARIES
+# OBSERVED MODEL
 # ============================================================
-
 
 
 # ------------------------------------------------------------
-# 19. Overall null summary
+# 10. Calculate observed Mule Deer PM2.5 ALE
 # ------------------------------------------------------------
 
 cat(
@@ -779,7 +534,7 @@ cat(
 )
 
 cat(
-  "OVERALL ALE NULL DISTRIBUTION\n"
+  "CALCULATING OBSERVED MULE DEER PM2.5 RESPONSE\n"
 )
 
 cat(
@@ -787,179 +542,229 @@ cat(
 )
 
 
-print(
-  summary(
-    null.overall
-  )
+observed.result <- calculate_pm25_ale(
+  
+  model.data =
+    mule.model.data,
+  
+  seed.value =
+    42
 )
 
 
+observed.overall <-
+  observed.result$overall.change
 
-# ------------------------------------------------------------
-# 20. Upper-tail null summary
-# ------------------------------------------------------------
+
+observed.upper <-
+  observed.result$upper.change
+
 
 cat(
-  "\n====================================================\n"
-)
-
-cat(
-  "UPPER-TAIL ALE NULL DISTRIBUTION\n"
-)
-
-cat(
-  "====================================================\n"
-)
-
-
-print(
-  summary(
-    null.upper
-  )
-)
-
-
-
-# ============================================================
-# EMPIRICAL PERMUTATION P-VALUES
-# ============================================================
-
-
-
-# ------------------------------------------------------------
-# 21. Overall lower-tail probability
-# ------------------------------------------------------------
-
-overall.lower.p <- (
-  
-  sum(
-    null.overall <=
-      observed.overall,
-    na.rm = TRUE
-  ) + 1
-  
-) / (
-  number.runs + 1
-)
-
-
-
-# ------------------------------------------------------------
-# 22. Overall upper-tail probability
-# ------------------------------------------------------------
-
-overall.upper.p <- (
-  
-  sum(
-    null.overall >=
-      observed.overall,
-    na.rm = TRUE
-  ) + 1
-  
-) / (
-  number.runs + 1
-)
-
-
-
-# ------------------------------------------------------------
-# 23. Overall two-sided p-value
-# ------------------------------------------------------------
-
-overall.two.sided.p <- min(
-  1,
-  2 *
-    min(
-      overall.lower.p,
-      overall.upper.p
-    )
-)
-
-
-
-# ------------------------------------------------------------
-# 24. Upper-tail lower-tail probability
-# ------------------------------------------------------------
-
-high.lower.p <- (
-  
-  sum(
-    null.upper <=
-      observed.upper,
-    na.rm = TRUE
-  ) + 1
-  
-) / (
-  number.runs + 1
-)
-
-
-
-# ------------------------------------------------------------
-# 25. Upper-tail upper-tail probability
-# ------------------------------------------------------------
-
-high.upper.p <- (
-  
-  sum(
-    null.upper >=
-      observed.upper,
-    na.rm = TRUE
-  ) + 1
-  
-) / (
-  number.runs + 1
-)
-
-
-
-# ------------------------------------------------------------
-# 26. Upper-tail two-sided p-value
-# ------------------------------------------------------------
-
-high.two.sided.p <- min(
-  1,
-  2 *
-    min(
-      high.lower.p,
-      high.upper.p
-    )
-)
-
-
-
-# ============================================================
-# PERCENTILE POSITION WITHIN NULL DISTRIBUTION
-# ============================================================
-
-
-
-# ------------------------------------------------------------
-# 27. Overall null percentile
-# ------------------------------------------------------------
-
-overall.null.percentile <- mean(
-  null.overall <=
+  "Observed overall ALE change:",
+  round(
     observed.overall,
-  na.rm = TRUE
-) * 100
+    6
+  ),
+  "\n"
+)
 
 
-
-# ------------------------------------------------------------
-# 28. Upper-tail null percentile
-# ------------------------------------------------------------
-
-high.null.percentile <- mean(
-  null.upper <=
+cat(
+  "Observed upper-smoke ALE change:",
+  round(
     observed.upper,
-  na.rm = TRUE
-) * 100
-
+    6
+  ),
+  "\n"
+)
 
 
 # ============================================================
-# PRINT FINAL TEST RESULTS
+# PERMUTATION TEST
+# ============================================================
+
+
+# ------------------------------------------------------------
+# 11. Number of permutations
+#
+# Use 30 while developing the analysis.
+#
+# A larger number can be used later for the final analysis.
+# ------------------------------------------------------------
+
+n.permutations <- 30
+
+
+# ------------------------------------------------------------
+# 12. Create result storage
+# ------------------------------------------------------------
+
+permutation.results <- data.frame(
+  
+  Permutation =
+    1:n.permutations,
+  
+  Overall_ALE_Change =
+    NA_real_,
+  
+  Upper_ALE_Change =
+    NA_real_
+)
+
+
+# ------------------------------------------------------------
+# 13. Run PM2.5 permutations
+# ------------------------------------------------------------
+
+cat(
+  "\n====================================================\n"
+)
+
+cat(
+  "RUNNING MULE DEER PM2.5 PERMUTATIONS\n"
+)
+
+cat(
+  "====================================================\n"
+)
+
+
+for (
+  p in 1:n.permutations
+) {
+  
+  cat(
+    "Permutation",
+    p,
+    "of",
+    n.permutations,
+    "\n"
+  )
+  
+  
+  # ----------------------------------------------------------
+  # Copy original data
+  # ----------------------------------------------------------
+  
+  permuted.data <-
+    mule.model.data
+  
+  
+  # ----------------------------------------------------------
+  # Randomly shuffle PM2.5
+  #
+  # The response variable and all other predictors remain
+  # unchanged.
+  # ----------------------------------------------------------
+  
+  set.seed(
+    1000 + p
+  )
+  
+  
+  permuted.data$scale.smoke <- sample(
+    
+    permuted.data$scale.smoke,
+    
+    size =
+      nrow(
+        permuted.data
+      ),
+    
+    replace =
+      FALSE
+  )
+  
+  
+  # ----------------------------------------------------------
+  # Fit model and calculate randomized ALE
+  # ----------------------------------------------------------
+  
+  permuted.result <- calculate_pm25_ale(
+    
+    model.data =
+      permuted.data,
+    
+    seed.value =
+      2000 + p
+  )
+  
+  
+  permutation.results$Overall_ALE_Change[p] <-
+    permuted.result$overall.change
+  
+  
+  permutation.results$Upper_ALE_Change[p] <-
+    permuted.result$upper.change
+}
+
+
+# ============================================================
+# PERMUTATION P-VALUES
+# ============================================================
+
+
+# ------------------------------------------------------------
+# 14. Overall ALE p-value
+#
+# Absolute values are used so that unusually strong positive
+# or negative responses both count as extreme.
+# ------------------------------------------------------------
+
+overall.p.value <- (
+  
+  1 +
+    sum(
+      abs(
+        permutation.results$Overall_ALE_Change
+      ) >=
+        abs(
+          observed.overall
+        )
+    )
+  
+) / (
+  
+  n.permutations +
+    1
+)
+
+
+# ------------------------------------------------------------
+# 15. Upper-smoke ALE p-value
+# ------------------------------------------------------------
+
+valid.upper <- !is.na(
+  permutation.results$Upper_ALE_Change
+)
+
+
+upper.p.value <- (
+  
+  1 +
+    sum(
+      abs(
+        permutation.results$Upper_ALE_Change[
+          valid.upper
+        ]
+      ) >=
+        abs(
+          observed.upper
+        )
+    )
+  
+) / (
+  
+  sum(
+    valid.upper
+  ) +
+    1
+)
+
+
+# ============================================================
+# RESULTS
 # ============================================================
 
 cat(
@@ -976,12 +781,7 @@ cat(
 
 
 cat(
-  "\n--- OVERALL PM2.5 RESPONSE ---\n"
-)
-
-
-cat(
-  "Observed ALE change:",
+  "Observed overall ALE change:",
   round(
     observed.overall,
     6
@@ -991,74 +791,17 @@ cat(
 
 
 cat(
-  "Null mean:",
+  "Overall permutation p-value:",
   round(
-    mean(
-      null.overall,
-      na.rm = TRUE
-    ),
-    6
-  ),
-  "\n"
-)
-
-
-cat(
-  "Null median:",
-  round(
-    median(
-      null.overall,
-      na.rm = TRUE
-    ),
-    6
-  ),
-  "\n"
-)
-
-
-cat(
-  "Observed null percentile:",
-  round(
-    overall.null.percentile,
-    2
-  ),
-  "%\n"
-)
-
-
-cat(
-  "Two-sided permutation p-value:",
-  round(
-    overall.two.sided.p,
+    overall.p.value,
     4
   ),
   "\n"
 )
 
 
-
 cat(
-  "\n--- UPPER-TAIL PM2.5 RESPONSE ---\n"
-)
-
-
-cat(
-  "Upper-tail range:",
-  round(
-    high.smoke.threshold,
-    6
-  ),
-  "to",
-  round(
-    smoke.upper,
-    6
-  ),
-  "\n"
-)
-
-
-cat(
-  "Observed upper-tail ALE change:",
+  "\nObserved upper-smoke ALE change:",
   round(
     observed.upper,
     6
@@ -1068,50 +811,20 @@ cat(
 
 
 cat(
-  "Null mean:",
+  "Upper-smoke permutation p-value:",
   round(
-    mean(
-      null.upper,
-      na.rm = TRUE
-    ),
-    6
-  ),
-  "\n"
-)
-
-
-cat(
-  "Null median:",
-  round(
-    median(
-      null.upper,
-      na.rm = TRUE
-    ),
-    6
-  ),
-  "\n"
-)
-
-
-cat(
-  "Observed null percentile:",
-  round(
-    high.null.percentile,
-    2
-  ),
-  "%\n"
-)
-
-
-cat(
-  "Two-sided permutation p-value:",
-  round(
-    high.two.sided.p,
+    upper.p.value,
     4
   ),
   "\n"
 )
 
+
+cat(
+  "\nNumber of permutations:",
+  n.permutations,
+  "\n"
+)
 
 
 # ============================================================
@@ -1119,50 +832,36 @@ cat(
 # ============================================================
 
 
-
 # ------------------------------------------------------------
-# 29. Create results directory
+# 16. Create results directory
 # ------------------------------------------------------------
 
 dir.create(
   "results",
-  recursive = TRUE,
-  showWarnings = FALSE
+  recursive =
+    TRUE,
+  showWarnings =
+    FALSE
 )
 
 
-
 # ------------------------------------------------------------
-# 30. Save permutation runs
+# 17. Save individual permutation results
 # ------------------------------------------------------------
-
-permutation.results <- data.frame(
-  
-  Run =
-    1:number.runs,
-  
-  Overall_ALE_Change =
-    null.overall,
-  
-  Upper_Tail_ALE_Change =
-    null.upper
-)
-
-
 
 write.csv(
   
   permutation.results,
   
-  "results/Mule_Deer_PM25_Daily_Count_Permutation_Runs.csv",
+  "results/Mule_Deer_PM25_Permutation_Results.csv",
   
-  row.names = FALSE
+  row.names =
+    FALSE
 )
 
 
-
 # ------------------------------------------------------------
-# 31. Create summary table
+# 18. Create permutation summary
 # ------------------------------------------------------------
 
 permutation.summary <- data.frame(
@@ -1171,236 +870,38 @@ permutation.summary <- data.frame(
     "Mule Deer",
   
   Permutations =
-    number.runs,
+    n.permutations,
   
-  Observed_Overall_ALE =
+  Observed_Overall_ALE_Change =
     observed.overall,
   
-  Overall_Null_Mean =
-    mean(
-      null.overall,
-      na.rm = TRUE
-    ),
+  Overall_P_Value =
+    overall.p.value,
   
-  Overall_Null_Median =
-    median(
-      null.overall,
-      na.rm = TRUE
-    ),
-  
-  Overall_Null_Percentile =
-    overall.null.percentile,
-  
-  Overall_Two_Sided_P =
-    overall.two.sided.p,
-  
-  High_Smoke_Threshold =
-    high.smoke.threshold,
-  
-  Observed_Upper_Tail_ALE =
+  Observed_Upper_ALE_Change =
     observed.upper,
   
-  Upper_Tail_Null_Mean =
-    mean(
-      null.upper,
-      na.rm = TRUE
-    ),
+  Upper_P_Value =
+    upper.p.value,
   
-  Upper_Tail_Null_Median =
-    median(
-      null.upper,
-      na.rm = TRUE
-    ),
-  
-  Upper_Tail_Null_Percentile =
-    high.null.percentile,
-  
-  Upper_Tail_Two_Sided_P =
-    high.two.sided.p
+  stringsAsFactors =
+    FALSE
 )
 
 
-
 # ------------------------------------------------------------
-# 32. Save summary
+# 19. Save summary
 # ------------------------------------------------------------
 
 write.csv(
   
   permutation.summary,
   
-  "results/Mule_Deer_PM25_Daily_Count_Permutation_Summary.csv",
+  "results/Mule_Deer_PM25_Permutation_Summary.csv",
   
-  row.names = FALSE
+  row.names =
+    FALSE
 )
-
-
-
-# ============================================================
-# PLOT 1:
-# OVERALL ALE NULL DISTRIBUTION
-# ============================================================
-
-overall.plot.data <- data.frame(
-  ALE_Change =
-    null.overall
-)
-
-
-
-overall.null.plot <- ggplot(
-  
-  overall.plot.data,
-  
-  aes(
-    x =
-      ALE_Change
-  )
-  
-) +
-  
-  geom_histogram(
-    bins =
-      20
-  ) +
-  
-  geom_vline(
-    xintercept =
-      observed.overall,
-    linewidth =
-      1
-  ) +
-  
-  labs(
-    
-    title =
-      "Mule Deer Overall PM2.5 ALE Permutation Test",
-    
-    subtitle =
-      paste(
-        number.runs,
-        "Random Forest models after randomizing PM2.5"
-      ),
-    
-    x =
-      "Overall ALE Change",
-    
-    y =
-      "Number of Permutations"
-  ) +
-  
-  theme_minimal()
-
-
-
-print(
-  overall.null.plot
-)
-
-
-
-ggsave(
-  
-  filename =
-    "results/Mule_Deer_PM25_Overall_ALE_Permutation.png",
-  
-  plot =
-    overall.null.plot,
-  
-  width =
-    8,
-  
-  height =
-    6,
-  
-  dpi =
-    300
-)
-
-
-
-# ============================================================
-# PLOT 2:
-# UPPER-TAIL ALE NULL DISTRIBUTION
-# ============================================================
-
-upper.plot.data <- data.frame(
-  ALE_Change =
-    null.upper
-)
-
-
-
-upper.null.plot <- ggplot(
-  
-  upper.plot.data,
-  
-  aes(
-    x =
-      ALE_Change
-  )
-  
-) +
-  
-  geom_histogram(
-    bins =
-      20
-  ) +
-  
-  geom_vline(
-    xintercept =
-      observed.upper,
-    linewidth =
-      1
-  ) +
-  
-  labs(
-    
-    title =
-      "Mule Deer High-Smoke PM2.5 ALE Permutation Test",
-    
-    subtitle =
-      paste(
-        "Upper 10% of PM2.5 exposure -",
-        number.runs,
-        "PM2.5 permutations"
-      ),
-    
-    x =
-      "Upper-Tail ALE Change",
-    
-    y =
-      "Number of Permutations"
-  ) +
-  
-  theme_minimal()
-
-
-
-print(
-  upper.null.plot
-)
-
-
-
-ggsave(
-  
-  filename =
-    "results/Mule_Deer_PM25_Upper_Tail_ALE_Permutation.png",
-  
-  plot =
-    upper.null.plot,
-  
-  width =
-    8,
-  
-  height =
-    6,
-  
-  dpi =
-    300
-)
-
 
 
 # ============================================================
@@ -1412,23 +913,37 @@ cat(
 )
 
 cat(
-  "FINAL MULE DEER PM2.5 PERMUTATION SUMMARY\n"
+  "FINAL MULE DEER PERMUTATION SUMMARY\n"
 )
 
 cat(
   "====================================================\n"
 )
 
+cat(
+  "Trees: 500\n"
+)
+
+cat(
+  "mtry: 3\n"
+)
+
+cat(
+  "Minimum node size: 20\n"
+)
+
+cat(
+  "Split rule: Poisson\n"
+)
 
 cat(
   "Permutations:",
-  number.runs,
+  n.permutations,
   "\n"
 )
 
-
 cat(
-  "Observed overall ALE:",
+  "\nObserved overall ALE change:",
   round(
     observed.overall,
     6
@@ -1436,19 +951,17 @@ cat(
   "\n"
 )
 
-
 cat(
-  "Overall two-sided p-value:",
+  "Overall p-value:",
   round(
-    overall.two.sided.p,
+    overall.p.value,
     4
   ),
   "\n"
 )
 
-
 cat(
-  "Observed upper-tail ALE:",
+  "Observed upper-smoke ALE change:",
   round(
     observed.upper,
     6
@@ -1456,16 +969,14 @@ cat(
   "\n"
 )
 
-
 cat(
-  "Upper-tail two-sided p-value:",
+  "Upper-smoke p-value:",
   round(
-    high.two.sided.p,
+    upper.p.value,
     4
   ),
   "\n"
 )
-
 
 cat(
   "====================================================\n"

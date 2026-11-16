@@ -1,41 +1,32 @@
 # ============================================================
 # 17_random_forest_daily_count_moose.R
 #
-# RANDOM FOREST DAILY-COUNT MODEL - MOOSE
+# MOOSE DAILY-COUNT RANDOM FOREST
 #
-# PURPOSE:
+# FINAL MODELING METHOD:
 #
-# Model the number of independent moose detections recorded
-# during each camera-day.
+#   80% Training Sites
+#   10% Testing Sites
+#   10% Validation Sites
 #
-# All camera-days are included, including days with zero
-# detections.
+# Camera sites are kept completely separate between datasets.
 #
-# The model uses environmental, habitat, camera, and wildfire
-# PM2.5 predictors.
+# Random Forest settings:
 #
+#   Trees = 500
+#   mtry = 3
+#   Minimum node size = 20
+#   Split rule = Poisson
 #
-# MODELING STRATEGY:
+# The training model is evaluated first on the test set.
 #
-# 1. Split the data by camera site for predictive validation.
+# The validation set is kept completely untouched until the
+# final evaluation.
 #
-# 2. Fit a Random Forest count model to training sites.
-#
-# 3. Evaluate predictions on completely unseen camera sites.
-#
-# 4. Fit a second model using the complete dataset for
-#    interpretation of predictor relationships.
-#
-# 5. Include camera site in the full interpretation model so
-#    persistent differences among camera locations can be
-#    represented.
-#
-#
-# PM2.5 response interpretation will be performed in later
-# scripts using ALE and permutation testing.
+# A second model is then fit using the full dataset for later
+# interpretation with variable importance and ALE.
 #
 # ============================================================
-
 
 
 # ------------------------------------------------------------
@@ -45,7 +36,6 @@
 library(ranger)
 
 
-
 # ------------------------------------------------------------
 # 2. Load cleaned moose dataset
 # ------------------------------------------------------------
@@ -53,7 +43,6 @@ library(ranger)
 moose <- read.csv(
   "data-split/moose_model_data.csv"
 )
-
 
 
 # ------------------------------------------------------------
@@ -77,39 +66,13 @@ moose$Cell_ID <- as.factor(
 )
 
 
-
 # ============================================================
 # SELECT MODEL VARIABLES
 # ============================================================
-#
-# Response:
-#
-#     Daily_Count
-#
-#
-# Predictors:
-#
-#     scale.smoke
-#     julian
-#     scale.temp
-#     Road_Type
-#     Cam_Height
-#     Distance_to_Road
-#     Habitat_Type
-#     Land_Mgnt
-#     elev
-#     wadnr
-#
-#
-# Cell_ID is retained separately for grouped validation and for
-# the full-data interpretation model.
-#
-# ============================================================
-
 
 
 # ------------------------------------------------------------
-# 4. Keep variables required for analysis
+# 4. Keep the finalized predictor set
 # ------------------------------------------------------------
 
 moose.rf.data <- moose[
@@ -131,9 +94,8 @@ moose.rf.data <- moose[
 ]
 
 
-
 # ------------------------------------------------------------
-# 5. Remove incomplete observations if any remain
+# 5. Remove incomplete observations
 # ------------------------------------------------------------
 
 moose.rf.data <- moose.rf.data[
@@ -143,12 +105,9 @@ moose.rf.data <- moose.rf.data[
 ]
 
 
-
 # ============================================================
 # DATA SUMMARY
 # ============================================================
-
-
 
 cat(
   "\n====================================================\n"
@@ -162,18 +121,16 @@ cat(
   "====================================================\n"
 )
 
-
 cat(
-  "Camera-days:",
+  "Total camera-days:",
   nrow(
     moose.rf.data
   ),
   "\n"
 )
 
-
 cat(
-  "Camera sites:",
+  "Total camera sites:",
   length(
     unique(
       moose.rf.data$Cell_ID
@@ -182,24 +139,21 @@ cat(
   "\n"
 )
 
-
 cat(
-  "Zero-detection days:",
+  "Zero-count days:",
   sum(
     moose.rf.data$Daily_Count == 0
   ),
   "\n"
 )
 
-
 cat(
-  "Positive-detection days:",
+  "Positive-count days:",
   sum(
     moose.rf.data$Daily_Count > 0
   ),
   "\n"
 )
-
 
 cat(
   "Total detections:",
@@ -208,7 +162,6 @@ cat(
   ),
   "\n"
 )
-
 
 cat(
   "Mean daily count:",
@@ -222,19 +175,9 @@ cat(
 )
 
 
-
 # ============================================================
-# GROUPED TRAIN / TEST SPLIT
+# 80 / 10 / 10 GROUPED SITE SPLIT
 # ============================================================
-#
-# Camera sites, rather than individual camera-days, are divided
-# between training and testing data.
-#
-# This prevents observations from the same site from appearing
-# in both datasets.
-#
-# ============================================================
-
 
 
 # ------------------------------------------------------------
@@ -246,34 +189,67 @@ unique.sites <- unique(
 )
 
 
-
 # ------------------------------------------------------------
-# 7. Create reproducible 80/20 site split
+# 7. Shuffle camera sites reproducibly
 # ------------------------------------------------------------
 
 set.seed(42)
 
-
-training.sites <- sample(
+shuffled.sites <- sample(
   unique.sites,
-  size = floor(
-    0.80 *
-      length(
-        unique.sites
-      )
-  )
+  length(
+    unique.sites
+  ),
+  replace = FALSE
 )
-
-
-testing.sites <- setdiff(
-  unique.sites,
-  training.sites
-)
-
 
 
 # ------------------------------------------------------------
-# 8. Create training and testing datasets
+# 8. Calculate number of sites in each dataset
+# ------------------------------------------------------------
+
+n.sites <- length(
+  shuffled.sites
+)
+
+n.train <- floor(
+  0.80 *
+    n.sites
+)
+
+n.test <- floor(
+  0.10 *
+    n.sites
+)
+
+n.validation <- n.sites -
+  n.train -
+  n.test
+
+
+# ------------------------------------------------------------
+# 9. Assign camera sites
+# ------------------------------------------------------------
+
+training.sites <- shuffled.sites[
+  1:n.train
+]
+
+
+testing.sites <- shuffled.sites[
+  (n.train + 1):
+    (n.train + n.test)
+]
+
+
+validation.sites <- shuffled.sites[
+  (n.train + n.test + 1):
+    n.sites
+]
+
+
+# ------------------------------------------------------------
+# 10. Create training, testing, and validation datasets
 # ------------------------------------------------------------
 
 train <- moose.rf.data[
@@ -288,9 +264,37 @@ test <- moose.rf.data[
 ]
 
 
+validation <- moose.rf.data[
+  moose.rf.data$Cell_ID %in%
+    validation.sites,
+]
+
 
 # ------------------------------------------------------------
-# 9. Print grouped split information
+# 11. Remove Cell_ID from predictive model
+#
+# Cell_ID is used to create the grouped split.
+#
+# It is not included in the validation model because we want
+# to test performance on completely unseen camera sites.
+# ------------------------------------------------------------
+
+train.model <- train
+
+test.model <- test
+
+validation.model <- validation
+
+
+train.model$Cell_ID <- NULL
+
+test.model$Cell_ID <- NULL
+
+validation.model$Cell_ID <- NULL
+
+
+# ------------------------------------------------------------
+# 12. Print split information
 # ------------------------------------------------------------
 
 cat(
@@ -298,13 +302,12 @@ cat(
 )
 
 cat(
-  "GROUPED TRAIN / TEST SPLIT\n"
+  "80 / 10 / 10 DATASET SPLIT\n"
 )
 
 cat(
   "====================================================\n"
 )
-
 
 cat(
   "Training sites:",
@@ -314,7 +317,6 @@ cat(
   "\n"
 )
 
-
 cat(
   "Testing sites:",
   length(
@@ -323,66 +325,235 @@ cat(
   "\n"
 )
 
-
 cat(
-  "Training camera-days:",
-  nrow(
-    train
+  "Validation sites:",
+  length(
+    validation.sites
   ),
   "\n"
 )
 
+cat(
+  "\nTraining camera-days:",
+  nrow(
+    train.model
+  ),
+  "\n"
+)
 
 cat(
   "Testing camera-days:",
   nrow(
-    test
+    test.model
+  ),
+  "\n"
+)
+
+cat(
+  "Validation camera-days:",
+  nrow(
+    validation.model
   ),
   "\n"
 )
 
 
-
 # ============================================================
-# PREDICTIVE VALIDATION MODEL
-# ============================================================
-#
-# Cell_ID is NOT supplied to this model because the test set
-# contains camera sites that were not observed during training.
-#
+# MODEL EVALUATION FUNCTION
 # ============================================================
 
 
+# ------------------------------------------------------------
+# 13. Function for calculating predictive performance
+# ------------------------------------------------------------
+
+evaluate_model <- function(
+    observed,
+    predicted,
+    training.mean
+) {
+  
+  # ----------------------------------------------------------
+  # Mean Absolute Error
+  # ----------------------------------------------------------
+  
+  mae <- mean(
+    abs(
+      predicted -
+        observed
+    )
+  )
+  
+  
+  # ----------------------------------------------------------
+  # Root Mean Squared Error
+  # ----------------------------------------------------------
+  
+  rmse <- sqrt(
+    mean(
+      (
+        predicted -
+          observed
+      )^2
+    )
+  )
+  
+  
+  # ----------------------------------------------------------
+  # R-squared
+  # ----------------------------------------------------------
+  
+  sse <- sum(
+    (
+      observed -
+        predicted
+    )^2
+  )
+  
+  
+  sst <- sum(
+    (
+      observed -
+        mean(
+          observed
+        )
+    )^2
+  )
+  
+  
+  r2 <- 1 -
+    (
+      sse /
+        sst
+    )
+  
+  
+  # ----------------------------------------------------------
+  # Poisson deviance
+  # ----------------------------------------------------------
+  
+  epsilon <- 1e-10
+  
+  
+  predicted.safe <- pmax(
+    predicted,
+    epsilon
+  )
+  
+  
+  poisson.dev <- ifelse(
+    
+    observed == 0,
+    
+    2 *
+      predicted.safe,
+    
+    2 *
+      (
+        observed *
+          log(
+            observed /
+              predicted.safe
+          ) -
+          (
+            observed -
+              predicted.safe
+          )
+      )
+  )
+  
+  
+  mean.poisson.dev <- mean(
+    poisson.dev
+  )
+  
+  
+  # ----------------------------------------------------------
+  # Simple baseline model
+  #
+  # Predict the training-set mean for every observation.
+  # ----------------------------------------------------------
+  
+  baseline.predictions <- rep(
+    training.mean,
+    length(
+      observed
+    )
+  )
+  
+  
+  baseline.safe <- pmax(
+    baseline.predictions,
+    epsilon
+  )
+  
+  
+  baseline.dev <- ifelse(
+    
+    observed == 0,
+    
+    2 *
+      baseline.safe,
+    
+    2 *
+      (
+        observed *
+          log(
+            observed /
+              baseline.safe
+          ) -
+          (
+            observed -
+              baseline.safe
+          )
+      )
+  )
+  
+  
+  mean.baseline.dev <- mean(
+    baseline.dev
+  )
+  
+  
+  return(
+    c(
+      
+      MAE =
+        mae,
+      
+      RMSE =
+        rmse,
+      
+      R2 =
+        r2,
+      
+      Poisson_Deviance =
+        mean.poisson.dev,
+      
+      Baseline_Deviance =
+        mean.baseline.dev
+    )
+  )
+}
+
+
+# ============================================================
+# TRAIN RANDOM FOREST
+# ============================================================
+
 
 # ------------------------------------------------------------
-# 10. Prepare validation data
-# ------------------------------------------------------------
-
-train.model <- train
-
-test.model <- test
-
-
-train.model$Cell_ID <- NULL
-
-test.model$Cell_ID <- NULL
-
-
-
-# ------------------------------------------------------------
-# 11. Fit daily-count Random Forest
-# ------------------------------------------------------------
+# 14. Fit finalized Random Forest
 #
-# The Poisson splitting rule is designed for non-negative count
-# outcomes.
+# Final settings:
 #
-# permutation importance is used to evaluate predictor
-# contribution.
-#
-# min.node.size = 20 is retained for consistency and to reduce
-# extremely small terminal nodes in these sparse data.
-#
+# 500 trees
+# mtry = 3
+# minimum node size = 20
+# Poisson splitting rule
 # ------------------------------------------------------------
+
+set.seed(42)
 
 moose.daily.rf <- ranger(
   
@@ -393,6 +564,9 @@ moose.daily.rf <- ranger(
   
   num.trees =
     500,
+  
+  mtry =
+    3,
   
   min.node.size =
     20,
@@ -414,9 +588,13 @@ moose.daily.rf <- ranger(
 )
 
 
+# ============================================================
+# OUT-OF-BAG PERFORMANCE
+# ============================================================
+
 
 # ------------------------------------------------------------
-# 12. Print fitted validation model
+# 15. Print OOB R-squared
 # ------------------------------------------------------------
 
 cat(
@@ -424,28 +602,30 @@ cat(
 )
 
 cat(
-  "MOOSE DAILY-COUNT VALIDATION MODEL\n"
+  "TRAINING / OOB PERFORMANCE\n"
 )
 
 cat(
   "====================================================\n"
 )
 
-
-print(
-  moose.daily.rf
+cat(
+  "OOB R-squared:",
+  round(
+    moose.daily.rf$r.squared,
+    6
+  ),
+  "\n"
 )
 
 
-
 # ============================================================
-# TEST-SET PREDICTIONS
+# TEST SET EVALUATION
 # ============================================================
-
 
 
 # ------------------------------------------------------------
-# 13. Predict daily counts for unseen camera sites
+# 16. Predict the 10% test dataset
 # ------------------------------------------------------------
 
 test.predictions <- predict(
@@ -458,231 +638,50 @@ test.predictions <- predict(
 )$predictions
 
 
-
 # ------------------------------------------------------------
-# 14. Store observed values
-# ------------------------------------------------------------
-
-test.observed <-
-  test.model$Daily_Count
-
-
-
-# ============================================================
-# PREDICTIVE PERFORMANCE
-# ============================================================
-
-
-
-# ------------------------------------------------------------
-# 15. Mean Absolute Error
+# 17. Calculate test metrics
 # ------------------------------------------------------------
 
-test.mae <- mean(
-  abs(
-    test.predictions -
-      test.observed
-  )
-)
-
-
-
-# ------------------------------------------------------------
-# 16. Root Mean Squared Error
-# ------------------------------------------------------------
-
-test.rmse <- sqrt(
-  mean(
-    (
-      test.predictions -
-        test.observed
-    )^2
-  )
-)
-
-
-
-# ------------------------------------------------------------
-# 17. Test R-squared
-# ------------------------------------------------------------
-
-test.sse <- sum(
-  (
-    test.observed -
-      test.predictions
-  )^2
-)
-
-
-test.sst <- sum(
-  (
-    test.observed -
-      mean(
-        test.observed
-      )
-  )^2
-)
-
-
-test.r2 <- 1 - (
-  test.sse /
-    test.sst
-)
-
-
-
-# ============================================================
-# POISSON DEVIANCE
-# ============================================================
-#
-# Poisson deviance provides another performance measure that is
-# useful for count outcomes.
-#
-# Lower values indicate predictions that are closer to the
-# observed counts.
-#
-# ============================================================
-
-
-
-# ------------------------------------------------------------
-# 18. Create safe positive predictions
-# ------------------------------------------------------------
-
-epsilon <- 1e-10
-
-
-test.predictions.safe <- pmax(
-  test.predictions,
-  epsilon
-)
-
-
-
-# ------------------------------------------------------------
-# 19. Calculate observation-level Poisson deviance
-# ------------------------------------------------------------
-
-poisson.deviance <- ifelse(
+test.metrics <- evaluate_model(
   
-  test.observed == 0,
+  observed =
+    test.model$Daily_Count,
   
-  2 *
-    test.predictions.safe,
+  predicted =
+    test.predictions,
   
-  2 *
-    (
-      test.observed *
-        log(
-          test.observed /
-            test.predictions.safe
-        ) -
-        (
-          test.observed -
-            test.predictions.safe
-        )
+  training.mean =
+    mean(
+      train.model$Daily_Count
     )
 )
 
-
-
-# ------------------------------------------------------------
-# 20. Mean test Poisson deviance
-# ------------------------------------------------------------
-
-mean.poisson.deviance <- mean(
-  poisson.deviance
-)
-
-
-
-# ------------------------------------------------------------
-# 21. Create mean-count baseline
-# ------------------------------------------------------------
-
-baseline.prediction <- mean(
-  train.model$Daily_Count
-)
-
-
-baseline.predictions <- rep(
-  baseline.prediction,
-  length(
-    test.observed
-  )
-)
-
-
-baseline.predictions.safe <- pmax(
-  baseline.predictions,
-  epsilon
-)
-
-
-
-# ------------------------------------------------------------
-# 22. Calculate baseline Poisson deviance
-# ------------------------------------------------------------
-
-baseline.poisson.deviance <- ifelse(
-  
-  test.observed == 0,
-  
-  2 *
-    baseline.predictions.safe,
-  
-  2 *
-    (
-      test.observed *
-        log(
-          test.observed /
-            baseline.predictions.safe
-        ) -
-        (
-          test.observed -
-            baseline.predictions.safe
-        )
-    )
-)
-
-
-mean.baseline.deviance <- mean(
-  baseline.poisson.deviance
-)
-
-
-
-# ------------------------------------------------------------
-# 23. Print validation metrics
-# ------------------------------------------------------------
 
 cat(
   "\n====================================================\n"
 )
 
 cat(
-  "TEST-SET PERFORMANCE\n"
+  "TEST SET PERFORMANCE\n"
 )
 
 cat(
   "====================================================\n"
 )
 
-
 cat(
-  "Observed mean daily count:",
+  "Observed test mean:",
   round(
     mean(
-      test.observed
+      test.model$Daily_Count
     ),
     6
   ),
   "\n"
 )
 
-
 cat(
-  "Predicted mean daily count:",
+  "Predicted test mean:",
   round(
     mean(
       test.predictions
@@ -692,152 +691,284 @@ cat(
   "\n"
 )
 
-
 cat(
-  "MAE:",
+  "Test MAE:",
   round(
-    test.mae,
+    test.metrics["MAE"],
     6
   ),
   "\n"
 )
 
-
 cat(
-  "RMSE:",
+  "Test RMSE:",
   round(
-    test.rmse,
+    test.metrics["RMSE"],
     6
   ),
   "\n"
 )
-
 
 cat(
   "Test R-squared:",
   round(
-    test.r2,
+    test.metrics["R2"],
     6
   ),
   "\n"
 )
-
 
 cat(
-  "Mean Poisson deviance:",
+  "Test Poisson deviance:",
   round(
-    mean.poisson.deviance,
+    test.metrics[
+      "Poisson_Deviance"
+    ],
     6
   ),
   "\n"
 )
-
 
 cat(
-  "Mean baseline Poisson deviance:",
+  "Test baseline deviance:",
   round(
-    mean.baseline.deviance,
+    test.metrics[
+      "Baseline_Deviance"
+    ],
     6
   ),
   "\n"
 )
-
 
 
 # ============================================================
-# VALIDATION-MODEL VARIABLE IMPORTANCE
+# FINAL VALIDATION SET EVALUATION
 # ============================================================
 
 
+# ------------------------------------------------------------
+# 18. Predict completely untouched validation sites
+# ------------------------------------------------------------
+
+validation.predictions <- predict(
+  
+  moose.daily.rf,
+  
+  data =
+    validation.model
+  
+)$predictions
+
 
 # ------------------------------------------------------------
-# 24. Sort predictor importance
+# 19. Calculate validation metrics
 # ------------------------------------------------------------
 
-validation.importance <- sort(
+validation.metrics <- evaluate_model(
   
-  moose.daily.rf$variable.importance,
+  observed =
+    validation.model$Daily_Count,
   
-  decreasing =
-    TRUE
+  predicted =
+    validation.predictions,
+  
+  training.mean =
+    mean(
+      train.model$Daily_Count
+    )
 )
 
-
-
-# ------------------------------------------------------------
-# 25. Print importance
-# ------------------------------------------------------------
 
 cat(
   "\n====================================================\n"
 )
 
 cat(
-  "VALIDATION MODEL PERMUTATION IMPORTANCE\n"
+  "FINAL VALIDATION PERFORMANCE\n"
 )
 
 cat(
   "====================================================\n"
 )
 
+cat(
+  "Observed validation mean:",
+  round(
+    mean(
+      validation.model$Daily_Count
+    ),
+    6
+  ),
+  "\n"
+)
+
+cat(
+  "Predicted validation mean:",
+  round(
+    mean(
+      validation.predictions
+    ),
+    6
+  ),
+  "\n"
+)
+
+cat(
+  "Validation MAE:",
+  round(
+    validation.metrics["MAE"],
+    6
+  ),
+  "\n"
+)
+
+cat(
+  "Validation RMSE:",
+  round(
+    validation.metrics["RMSE"],
+    6
+  ),
+  "\n"
+)
+
+cat(
+  "Validation R-squared:",
+  round(
+    validation.metrics["R2"],
+    6
+  ),
+  "\n"
+)
+
+cat(
+  "Validation Poisson deviance:",
+  round(
+    validation.metrics[
+      "Poisson_Deviance"
+    ],
+    6
+  ),
+  "\n"
+)
+
+cat(
+  "Validation baseline deviance:",
+  round(
+    validation.metrics[
+      "Baseline_Deviance"
+    ],
+    6
+  ),
+  "\n"
+)
+
+
+# ============================================================
+# VARIABLE IMPORTANCE — VALIDATION MODEL
+# ============================================================
+
+
+# ------------------------------------------------------------
+# 20. Extract permutation importance
+# ------------------------------------------------------------
+
+validation.importance <- data.frame(
+  
+  Variable =
+    names(
+      moose.daily.rf$variable.importance
+    ),
+  
+  Importance =
+    as.numeric(
+      moose.daily.rf$variable.importance
+    ),
+  
+  stringsAsFactors =
+    FALSE
+)
+
+
+# ------------------------------------------------------------
+# 21. Sort from highest to lowest importance
+# ------------------------------------------------------------
+
+validation.importance <- validation.importance[
+  order(
+    validation.importance$Importance,
+    decreasing = TRUE
+  ),
+]
+
+
+rownames(
+  validation.importance
+) <- NULL
+
+
+cat(
+  "\n====================================================\n"
+)
+
+cat(
+  "VALIDATION MODEL VARIABLE IMPORTANCE\n"
+)
+
+cat(
+  "====================================================\n"
+)
 
 print(
   validation.importance
 )
 
 
-
 # ------------------------------------------------------------
-# 26. Print PM2.5 importance rank
+# 22. Find PM2.5 importance rank
 # ------------------------------------------------------------
 
-validation.smoke.rank <- which(
-  names(
-    validation.importance
-  ) ==
+smoke.rank.validation <- which(
+  validation.importance$Variable ==
     "scale.smoke"
 )
 
 
 cat(
   "\nPM2.5 importance rank:",
-  validation.smoke.rank,
+  smoke.rank.validation,
   "of",
-  length(
+  nrow(
     validation.importance
   ),
   "\n"
 )
 
 
-
 # ============================================================
 # FULL-DATA INTERPRETATION MODEL
 # ============================================================
-#
-# The complete dataset is used for interpretation after
-# predictive validation is complete.
-#
-# Cell_ID is included as a categorical predictor so the model
-# can represent persistent differences among camera sites.
-#
-# This model will be used for PM2.5 response interpretation.
-#
-# ============================================================
-
 
 
 # ------------------------------------------------------------
-# 27. Prepare full interpretation data
+# 23. Prepare full dataset
+#
+# Cell_ID is retained here as a factor because this model is
+# used for interpretation rather than prediction at new sites.
+#
+# This allows the model to represent persistent differences
+# among camera locations.
 # ------------------------------------------------------------
 
 full.model.data <- moose.rf.data
 
 
+# ------------------------------------------------------------
+# 24. Fit full-data interpretation model
+#
+# Uses the exact same finalized RF settings.
+# ------------------------------------------------------------
 
-# ------------------------------------------------------------
-# 28. Fit full-data daily-count Random Forest
-# ------------------------------------------------------------
+set.seed(42)
 
 moose.daily.rf.full <- ranger(
   
@@ -848,6 +979,9 @@ moose.daily.rf.full <- ranger(
   
   num.trees =
     500,
+  
+  mtry =
+    3,
   
   min.node.size =
     20,
@@ -869,52 +1003,8 @@ moose.daily.rf.full <- ranger(
 )
 
 
-
 # ------------------------------------------------------------
-# 29. Print full model
-# ------------------------------------------------------------
-
-cat(
-  "\n====================================================\n"
-)
-
-cat(
-  "FULL-DATA MOOSE DAILY-COUNT MODEL\n"
-)
-
-cat(
-  "====================================================\n"
-)
-
-
-print(
-  moose.daily.rf.full
-)
-
-
-
-# ============================================================
-# FULL-DATA VARIABLE IMPORTANCE
-# ============================================================
-
-
-
-# ------------------------------------------------------------
-# 30. Sort full-model importance
-# ------------------------------------------------------------
-
-full.importance <- sort(
-  
-  moose.daily.rf.full$variable.importance,
-  
-  decreasing =
-    TRUE
-)
-
-
-
-# ------------------------------------------------------------
-# 31. Print all predictor importance
+# 25. Print full-model OOB R-squared
 # ------------------------------------------------------------
 
 cat(
@@ -922,88 +1012,120 @@ cat(
 )
 
 cat(
-  "FULL MODEL PERMUTATION IMPORTANCE\n"
+  "FULL-DATA INTERPRETATION MODEL\n"
 )
 
 cat(
   "====================================================\n"
 )
 
+cat(
+  "Full-model OOB R-squared:",
+  round(
+    moose.daily.rf.full$r.squared,
+    6
+  ),
+  "\n"
+)
+
+
+# ============================================================
+# FULL-MODEL VARIABLE IMPORTANCE
+# ============================================================
+
+
+# ------------------------------------------------------------
+# 26. Extract full-model permutation importance
+# ------------------------------------------------------------
+
+full.importance <- data.frame(
+  
+  Variable =
+    names(
+      moose.daily.rf.full$variable.importance
+    ),
+  
+  Importance =
+    as.numeric(
+      moose.daily.rf.full$variable.importance
+    ),
+  
+  stringsAsFactors =
+    FALSE
+)
+
+
+# ------------------------------------------------------------
+# 27. Sort full-model importance
+# ------------------------------------------------------------
+
+full.importance <- full.importance[
+  order(
+    full.importance$Importance,
+    decreasing = TRUE
+  ),
+]
+
+
+rownames(
+  full.importance
+) <- NULL
+
+
+cat(
+  "\n====================================================\n"
+)
+
+cat(
+  "FULL MODEL VARIABLE IMPORTANCE\n"
+)
+
+cat(
+  "====================================================\n"
+)
 
 print(
   full.importance
 )
 
 
-
 # ------------------------------------------------------------
-# 32. Calculate ecological-predictor importance
-# ------------------------------------------------------------
+# 28. Calculate ecological predictor PM2.5 rank
 #
-# Cell_ID is removed from this ranking because site identity is
-# being used as a control variable rather than as an
-# environmental predictor of interest.
-#
+# Cell_ID is removed from the ranking because it is a site
+# identifier rather than an ecological or camera predictor.
 # ------------------------------------------------------------
 
-ecological.importance <-
-  full.importance[
-    names(
-      full.importance
-    ) !=
-      "Cell_ID"
-  ]
+ecological.importance <- full.importance[
+  full.importance$Variable !=
+    "Cell_ID",
+]
 
 
-
-# ------------------------------------------------------------
-# 33. Print ecological-predictor importance
-# ------------------------------------------------------------
-
-cat(
-  "\nEcological/camera predictor importance:\n"
-)
-
-
-print(
-  ecological.importance
-)
-
-
-
-# ------------------------------------------------------------
-# 34. Calculate PM2.5 importance rank
-# ------------------------------------------------------------
-
-full.smoke.rank <- which(
-  names(
-    ecological.importance
-  ) ==
+smoke.rank.full <- which(
+  ecological.importance$Variable ==
     "scale.smoke"
 )
 
 
-
 cat(
-  "\nPM2.5 importance rank among ecological/camera predictors:",
-  full.smoke.rank,
+  "\nPM2.5 ecological/camera importance rank:",
+  smoke.rank.full,
   "of",
-  length(
+  nrow(
     ecological.importance
   ),
   "\n"
 )
 
 
-
 # ============================================================
-# SAVE VALIDATION RESULTS
+# SAVE RESULTS
 # ============================================================
-
 
 
 # ------------------------------------------------------------
-# 35. Create results folder
+# 29. Create results directory
 # ------------------------------------------------------------
 
 dir.create(
@@ -1015,77 +1137,77 @@ dir.create(
 )
 
 
-
 # ------------------------------------------------------------
-# 36. Create performance results table
+# 30. Create model-performance table
 # ------------------------------------------------------------
 
-performance.results <- data.frame(
+performance.table <- data.frame(
   
-  Species =
-    "Moose",
+  Dataset = c(
+    "Test",
+    "Validation"
+  ),
   
-  Training_Sites =
-    length(
-      training.sites
-    ),
+  MAE = c(
+    test.metrics["MAE"],
+    validation.metrics["MAE"]
+  ),
   
-  Testing_Sites =
-    length(
-      testing.sites
-    ),
+  RMSE = c(
+    test.metrics["RMSE"],
+    validation.metrics["RMSE"]
+  ),
   
-  Training_Camera_Days =
-    nrow(
-      train
-    ),
+  R2 = c(
+    test.metrics["R2"],
+    validation.metrics["R2"]
+  ),
   
-  Testing_Camera_Days =
-    nrow(
-      test
-    ),
+  Poisson_Deviance = c(
+    test.metrics[
+      "Poisson_Deviance"
+    ],
+    validation.metrics[
+      "Poisson_Deviance"
+    ]
+  ),
   
-  Test_Mean_Observed =
-    mean(
-      test.observed
-    ),
+  Baseline_Deviance = c(
+    test.metrics[
+      "Baseline_Deviance"
+    ],
+    validation.metrics[
+      "Baseline_Deviance"
+    ]
+  ),
   
-  Test_Mean_Predicted =
-    mean(
-      test.predictions
-    ),
-  
-  MAE =
-    test.mae,
-  
-  RMSE =
-    test.rmse,
-  
-  Test_R2 =
-    test.r2,
-  
-  Mean_Poisson_Deviance =
-    mean.poisson.deviance,
-  
-  Baseline_Poisson_Deviance =
-    mean.baseline.deviance,
-  
-  PM25_Validation_Importance_Rank =
-    validation.smoke.rank,
-  
-  PM25_Full_Model_Importance_Rank =
-    full.smoke.rank
+  stringsAsFactors =
+    FALSE
 )
 
 
+# ------------------------------------------------------------
+# 31. Add whether RF beats baseline
+# ------------------------------------------------------------
+
+performance.table$Beats_Baseline <- ifelse(
+  
+  performance.table$Poisson_Deviance <
+    performance.table$Baseline_Deviance,
+  
+  "Yes",
+  
+  "No"
+)
+
 
 # ------------------------------------------------------------
-# 37. Save performance table
+# 32. Save model performance
 # ------------------------------------------------------------
 
 write.csv(
   
-  performance.results,
+  performance.table,
   
   "results/Moose_Daily_Count_RF_Performance.csv",
   
@@ -1094,24 +1216,13 @@ write.csv(
 )
 
 
-
 # ------------------------------------------------------------
-# 38. Save validation importance
+# 33. Save validation-model importance
 # ------------------------------------------------------------
 
 write.csv(
   
-  data.frame(
-    Predictor =
-      names(
-        validation.importance
-      ),
-    
-    Permutation_Importance =
-      as.numeric(
-        validation.importance
-      )
-  ),
+  validation.importance,
   
   "results/Moose_Daily_Count_RF_Validation_Importance.csv",
   
@@ -1120,24 +1231,13 @@ write.csv(
 )
 
 
-
 # ------------------------------------------------------------
-# 39. Save full-model ecological importance
+# 34. Save full-model importance
 # ------------------------------------------------------------
 
 write.csv(
   
-  data.frame(
-    Predictor =
-      names(
-        ecological.importance
-      ),
-    
-    Permutation_Importance =
-      as.numeric(
-        ecological.importance
-      )
-  ),
+  full.importance,
   
   "results/Moose_Daily_Count_RF_Full_Model_Importance.csv",
   
@@ -1145,6 +1245,66 @@ write.csv(
     FALSE
 )
 
+
+# ------------------------------------------------------------
+# 35. Save site assignments
+# ------------------------------------------------------------
+
+site.assignments <- data.frame(
+  
+  Cell_ID = c(
+    
+    as.character(
+      training.sites
+    ),
+    
+    as.character(
+      testing.sites
+    ),
+    
+    as.character(
+      validation.sites
+    )
+  ),
+  
+  Dataset = c(
+    
+    rep(
+      "Training",
+      length(
+        training.sites
+      )
+    ),
+    
+    rep(
+      "Test",
+      length(
+        testing.sites
+      )
+    ),
+    
+    rep(
+      "Validation",
+      length(
+        validation.sites
+      )
+    )
+  ),
+  
+  stringsAsFactors =
+    FALSE
+)
+
+
+write.csv(
+  
+  site.assignments,
+  
+  "results/Moose_80_10_10_Site_Assignments.csv",
+  
+  row.names =
+    FALSE
+)
 
 
 # ============================================================
@@ -1156,27 +1316,38 @@ cat(
 )
 
 cat(
-  "MOOSE DAILY-COUNT RANDOM FOREST SUMMARY\n"
+  "FINAL MOOSE RANDOM FOREST SUMMARY\n"
 )
 
 cat(
   "====================================================\n"
 )
 
+cat(
+  "Split: 80% training / 10% test / 10% validation\n"
+)
 
 cat(
-  "All camera-days modeled:",
-  nrow(
-    moose.rf.data
-  ),
-  "\n"
+  "Trees: 500\n"
+)
+
+cat(
+  "mtry: 3\n"
+)
+
+cat(
+  "Minimum node size: 20\n"
+)
+
+cat(
+  "Split rule: Poisson\n"
 )
 
 
 cat(
-  "Test MAE:",
+  "\nTest R-squared:",
   round(
-    test.mae,
+    test.metrics["R2"],
     6
   ),
   "\n"
@@ -1184,9 +1355,11 @@ cat(
 
 
 cat(
-  "Test RMSE:",
+  "Test Poisson deviance:",
   round(
-    test.rmse,
+    test.metrics[
+      "Poisson_Deviance"
+    ],
     6
   ),
   "\n"
@@ -1194,9 +1367,9 @@ cat(
 
 
 cat(
-  "Test R-squared:",
+  "Validation R-squared:",
   round(
-    test.r2,
+    validation.metrics["R2"],
     6
   ),
   "\n"
@@ -1204,9 +1377,11 @@ cat(
 
 
 cat(
-  "RF mean Poisson deviance:",
+  "Validation Poisson deviance:",
   round(
-    mean.poisson.deviance,
+    validation.metrics[
+      "Poisson_Deviance"
+    ],
     6
   ),
   "\n"
@@ -1214,9 +1389,11 @@ cat(
 
 
 cat(
-  "Baseline mean Poisson deviance:",
+  "Validation baseline deviance:",
   round(
-    mean.baseline.deviance,
+    validation.metrics[
+      "Baseline_Deviance"
+    ],
     6
   ),
   "\n"
@@ -1225,22 +1402,14 @@ cat(
 
 cat(
   "PM2.5 validation importance rank:",
-  validation.smoke.rank,
-  "of",
-  length(
-    validation.importance
-  ),
+  smoke.rank.validation,
   "\n"
 )
 
 
 cat(
-  "PM2.5 full-model importance rank:",
-  full.smoke.rank,
-  "of",
-  length(
-    ecological.importance
-  ),
+  "PM2.5 full-model ecological rank:",
+  smoke.rank.full,
   "\n"
 )
 

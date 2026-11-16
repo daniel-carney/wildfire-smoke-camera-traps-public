@@ -1,24 +1,31 @@
 # ============================================================
 # 36_black_bear_daily_count_pm25_ale.R
 #
-# BLACK BEAR DAILY-COUNT PM2.5 ALE ANALYSIS
+# BLACK BEAR PM2.5 ACCUMULATED LOCAL EFFECTS
 #
 # PURPOSE:
 #
-# Examine how predicted daily black bear detection counts
-# change across wildfire-attributable PM2.5 levels.
+# Examine the modeled relationship between wildfire-related
+# PM2.5 and daily black bear detection counts.
 #
-# The Random Forest response is Daily_Count, so all complete
-# camera-days are represented, including zero-detection days.
+# Final Random Forest settings:
 #
-# PM2.5 response is evaluated using Accumulated Local Effects
-# (ALE).
+#   Trees = 500
+#   mtry = 3
+#   Minimum node size = 20
+#   Split rule = Poisson
 #
-# Observed daily-count summaries are also calculated across the
-# same PM2.5 intervals for descriptive comparison.
+# The full cleaned dataset is used for interpretation.
+#
+# PM2.5 response is summarized using:
+#
+#   1. Accumulated Local Effects (ALE)
+#   2. Raw observed daily counts within the same PM2.5 bins
+#
+# ALE describes a modeled association and does not establish
+# that wildfire smoke causes changes in black bear detections.
 #
 # ============================================================
-
 
 
 # ------------------------------------------------------------
@@ -26,9 +33,7 @@
 # ------------------------------------------------------------
 
 library(ranger)
-
 library(ggplot2)
-
 
 
 # ------------------------------------------------------------
@@ -38,7 +43,6 @@ library(ggplot2)
 bear <- read.csv(
   "data-split/black_bear_model_data.csv"
 )
-
 
 
 # ------------------------------------------------------------
@@ -62,18 +66,16 @@ bear$Cell_ID <- as.factor(
 )
 
 
-
 # ============================================================
 # SELECT MODEL VARIABLES
 # ============================================================
 
 
-
 # ------------------------------------------------------------
-# 4. Keep variables used in the daily-count model
+# 4. Keep finalized model variables
 # ------------------------------------------------------------
 
-bear.rf.data <- bear[
+bear.model.data <- bear[
   ,
   c(
     "Cell_ID",
@@ -92,38 +94,40 @@ bear.rf.data <- bear[
 ]
 
 
-
 # ------------------------------------------------------------
 # 5. Remove incomplete observations
 # ------------------------------------------------------------
 
-bear.rf.data <- bear.rf.data[
+bear.model.data <- bear.model.data[
   complete.cases(
-    bear.rf.data
+    bear.model.data
   ),
 ]
 
 
-
 # ============================================================
-# FIT FULL DAILY-COUNT RANDOM FOREST
+# FIT FULL-DATA INTERPRETATION MODEL
 # ============================================================
-
 
 
 # ------------------------------------------------------------
-# 6. Fit full-data Random Forest
+# 6. Fit finalized Black Bear Random Forest
 # ------------------------------------------------------------
 
-bear.daily.rf.full <- ranger(
+set.seed(42)
+
+bear.rf.full <- ranger(
   
   Daily_Count ~ .,
   
   data =
-    bear.rf.data,
+    bear.model.data,
   
   num.trees =
     500,
+  
+  mtry =
+    3,
   
   min.node.size =
     20,
@@ -145,43 +149,58 @@ bear.daily.rf.full <- ranger(
 )
 
 
-
-# ------------------------------------------------------------
-# 7. Print model summary
-# ------------------------------------------------------------
-
 cat(
   "\n====================================================\n"
 )
 
 cat(
-  "FULL BLACK BEAR DAILY-COUNT RANDOM FOREST\n"
+  "BLACK BEAR FULL-DATA INTERPRETATION MODEL\n"
 )
 
 cat(
   "====================================================\n"
 )
 
+cat(
+  "Observations:",
+  nrow(
+    bear.model.data
+  ),
+  "\n"
+)
 
-print(
-  bear.daily.rf.full
+cat(
+  "Camera sites:",
+  length(
+    unique(
+      bear.model.data$Cell_ID
+    )
+  ),
+  "\n"
+)
+
+cat(
+  "OOB R-squared:",
+  round(
+    bear.rf.full$r.squared,
+    6
+  ),
+  "\n"
 )
 
 
-
 # ============================================================
-# DEFINE PM2.5 INTERPRETATION RANGE
+# DEFINE PM2.5 ANALYSIS RANGE
 # ============================================================
-
 
 
 # ------------------------------------------------------------
-# 8. Calculate PM2.5 limits
+# 7. Use central 1st through 99th percentile
 # ------------------------------------------------------------
 
 smoke.lower <- as.numeric(
   quantile(
-    bear.rf.data$scale.smoke,
+    bear.model.data$scale.smoke,
     probs = 0.01,
     na.rm = TRUE
   )
@@ -190,78 +209,68 @@ smoke.lower <- as.numeric(
 
 smoke.upper <- as.numeric(
   quantile(
-    bear.rf.data$scale.smoke,
+    bear.model.data$scale.smoke,
     probs = 0.99,
     na.rm = TRUE
   )
 )
 
 
-
 cat(
-  "\nPM2.5 interpretation range:\n"
-)
-
-
-cat(
-  "1st percentile:",
+  "\nPM2.5 1st percentile:",
   smoke.lower,
   "\n"
 )
 
-
 cat(
-  "99th percentile:",
+  "PM2.5 99th percentile:",
   smoke.upper,
   "\n"
 )
 
 
-
 # ------------------------------------------------------------
-# 9. Restrict data to central PM2.5 range
+# 8. Restrict ALE to central PM2.5 range
 # ------------------------------------------------------------
 
-central.data <- bear.rf.data[
-  bear.rf.data$scale.smoke >= smoke.lower &
-    bear.rf.data$scale.smoke <= smoke.upper,
+ale.data <- bear.model.data[
+  bear.model.data$scale.smoke >=
+    smoke.lower &
+    bear.model.data$scale.smoke <=
+    smoke.upper,
 ]
 
 
-
 cat(
-  "\nCentral observations:",
+  "Observations included in ALE:",
   nrow(
-    central.data
+    ale.data
   ),
   "\n"
 )
 
-
 cat(
-  "Excluded observations:",
+  "Observations excluded from ALE:",
   nrow(
-    bear.rf.data
+    bear.model.data
   ) -
     nrow(
-      central.data
+      ale.data
     ),
   "\n"
 )
 
 
-
 # ============================================================
-# CREATE REFINED ALE BOUNDARIES
+# CREATE PM2.5 BREAKS
 # ============================================================
-
 
 
 # ------------------------------------------------------------
-# 10. Define quantile probabilities
+# 9. Quantile probabilities
 # ------------------------------------------------------------
 
-ale.probabilities <- c(
+ale.probs <- c(
   0.01,
   0.05,
   0.10,
@@ -290,390 +299,327 @@ ale.probabilities <- c(
 )
 
 
-
 # ------------------------------------------------------------
-# 11. Create unique PM2.5 boundaries
+# 10. Convert quantiles into PM2.5 values
 # ------------------------------------------------------------
 
-ale.breaks <- as.numeric(
+smoke.breaks <- as.numeric(
   quantile(
-    central.data$scale.smoke,
+    bear.model.data$scale.smoke,
     probs =
-      ale.probabilities,
+      ale.probs,
     na.rm =
       TRUE
   )
 )
 
 
-ale.breaks <- unique(
-  ale.breaks
+smoke.breaks <- unique(
+  smoke.breaks
 )
 
 
-
 cat(
-  "Number of ALE boundaries:",
+  "\nNumber of unique PM2.5 breaks:",
   length(
-    ale.breaks
+    smoke.breaks
   ),
   "\n"
 )
 
-
 cat(
   "Number of ALE intervals:",
   length(
-    ale.breaks
+    smoke.breaks
   ) - 1,
   "\n"
 )
 
 
-
 # ============================================================
-# ALE FUNCTION
+# CUSTOM ALE CALCULATION
 # ============================================================
-
 
 
 # ------------------------------------------------------------
-# 12. Define regression ALE function
+# 11. Create storage
 # ------------------------------------------------------------
 
-calculate_regression_ale <- function(
-    model,
-    data,
-    breaks,
-    variable = "scale.smoke"
+ale.intervals <- data.frame(
+  
+  Lower =
+    numeric(),
+  
+  Upper =
+    numeric(),
+  
+  Midpoint =
+    numeric(),
+  
+  N =
+    integer(),
+  
+  Local_Effect =
+    numeric(),
+  
+  stringsAsFactors =
+    FALSE
+)
+
+
+# ------------------------------------------------------------
+# 12. Calculate local PM2.5 effects
+# ------------------------------------------------------------
+
+for (
+  i in 1:(
+    length(
+      smoke.breaks
+    ) - 1
+  )
 ) {
   
-  x <- data[[variable]]
+  lower.value <-
+    smoke.breaks[i]
+  
+  upper.value <-
+    smoke.breaks[i + 1]
   
   
-  bin.id <- cut(
-    x,
-    breaks =
-      breaks,
-    include.lowest =
-      TRUE,
-    labels =
-      FALSE
-  )
-  
-  
-  number.intervals <-
+  if (
+    i <
     length(
-      breaks
+      smoke.breaks
     ) - 1
-  
-  
-  local.effects <- numeric(
-    number.intervals
-  )
-  
-  
-  observations.per.bin <- integer(
-    number.intervals
-  )
-  
-  
-  for (
-    b in 1:number.intervals
   ) {
     
-    rows.in.bin <- which(
-      bin.id == b
+    interval.rows <- which(
+      
+      ale.data$scale.smoke >=
+        lower.value &
+        
+        ale.data$scale.smoke <
+        upper.value
     )
     
+  } else {
     
-    observations.per.bin[b] <-
-      length(
-        rows.in.bin
-      )
-    
-    
-    if (
-      length(
-        rows.in.bin
-      ) == 0
-    ) {
+    interval.rows <- which(
       
-      local.effects[b] <- NA
-      
-      next
-    }
-    
-    
-    lower.data <- data[
-      rows.in.bin,
-      ,
-      drop = FALSE
-    ]
-    
-    
-    upper.data <- data[
-      rows.in.bin,
-      ,
-      drop = FALSE
-    ]
-    
-    
-    lower.data[[variable]] <-
-      breaks[b]
-    
-    
-    upper.data[[variable]] <-
-      breaks[b + 1]
-    
-    
-    lower.prediction <- predict(
-      model,
-      data =
-        lower.data
-    )$predictions
-    
-    
-    upper.prediction <- predict(
-      model,
-      data =
-        upper.data
-    )$predictions
-    
-    
-    local.effects[b] <- mean(
-      upper.prediction -
-        lower.prediction
+      ale.data$scale.smoke >=
+        lower.value &
+        
+        ale.data$scale.smoke <=
+        upper.value
     )
   }
   
   
-  valid <- !is.na(
-    local.effects
+  if (
+    length(
+      interval.rows
+    ) == 0
+  ) {
+    
+    next
+  }
+  
+  
+  interval.data <- ale.data[
+    interval.rows,
+  ]
+  
+  
+  lower.data <-
+    interval.data
+  
+  upper.data <-
+    interval.data
+  
+  
+  lower.data$scale.smoke <-
+    lower.value
+  
+  upper.data$scale.smoke <-
+    upper.value
+  
+  
+  lower.pred <- predict(
+    
+    bear.rf.full,
+    
+    data =
+      lower.data
+    
+  )$predictions
+  
+  
+  upper.pred <- predict(
+    
+    bear.rf.full,
+    
+    data =
+      upper.data
+    
+  )$predictions
+  
+  
+  local.effect <- mean(
+    upper.pred -
+      lower.pred
   )
   
   
-  effects.valid <-
-    local.effects[
-      valid
-    ]
-  
-  
-  observations.valid <-
-    observations.per.bin[
-      valid
-    ]
-  
-  
-  accumulated <- cumsum(
-    effects.valid
-  )
-  
-  
-  center.value <- weighted.mean(
-    accumulated,
-    w =
-      observations.valid
-  )
-  
-  
-  centered.ale <-
-    accumulated -
-    center.value
-  
-  
-  results <- data.frame(
+  ale.intervals <- rbind(
     
-    Lower_PM25 =
-      breaks[
-        1:number.intervals
-      ][valid],
+    ale.intervals,
     
-    Upper_PM25 =
-      breaks[
-        2:(number.intervals + 1)
-      ][valid],
-    
-    Observations =
-      observations.valid,
-    
-    Local_Effect =
-      effects.valid,
-    
-    ALE =
-      centered.ale
-  )
-  
-  
-  return(
-    results
+    data.frame(
+      
+      Lower =
+        lower.value,
+      
+      Upper =
+        upper.value,
+      
+      Midpoint =
+        (
+          lower.value +
+            upper.value
+        ) / 2,
+      
+      N =
+        length(
+          interval.rows
+        ),
+      
+      Local_Effect =
+        local.effect
+    )
   )
 }
 
 
-
 # ============================================================
-# CALCULATE PM2.5 ALE
+# ACCUMULATE LOCAL EFFECTS
 # ============================================================
-
 
 
 # ------------------------------------------------------------
-# 13. Calculate ALE
+# 13. Calculate cumulative ALE
 # ------------------------------------------------------------
 
-bear.ale <- calculate_regression_ale(
-  
-  model =
-    bear.daily.rf.full,
-  
-  data =
-    central.data,
-  
-  breaks =
-    ale.breaks
+ale.intervals$ALE_Raw <- cumsum(
+  ale.intervals$Local_Effect
 )
 
 
+# ------------------------------------------------------------
+# 14. Center ALE around zero
+# ------------------------------------------------------------
+
+ale.weights <- ale.intervals$N /
+  sum(
+    ale.intervals$N
+  )
+
+
+ale.center <- sum(
+  ale.intervals$ALE_Raw *
+    ale.weights
+)
+
+
+ale.intervals$ALE <- (
+  ale.intervals$ALE_Raw -
+    ale.center
+)
+
+
+# ============================================================
+# ALE SUMMARY
+# ============================================================
+
 
 # ------------------------------------------------------------
-# 14. Print ALE table
+# 15. Overall low-to-high PM2.5 change
 # ------------------------------------------------------------
+
+overall.ale.change <- (
+  tail(
+    ale.intervals$ALE,
+    1
+  ) -
+    head(
+      ale.intervals$ALE,
+      1
+    )
+)
+
+
+# ------------------------------------------------------------
+# 16. Largest local PM2.5 effect
+# ------------------------------------------------------------
+
+largest.local.row <- which.max(
+  abs(
+    ale.intervals$Local_Effect
+  )
+)
+
+
+largest.local.effect <-
+  ale.intervals$Local_Effect[
+    largest.local.row
+  ]
+
+
+largest.local.lower <-
+  ale.intervals$Lower[
+    largest.local.row
+  ]
+
+
+largest.local.upper <-
+  ale.intervals$Upper[
+    largest.local.row
+  ]
+
+
+# ------------------------------------------------------------
+# 17. Percentage of observations in largest interval
+# ------------------------------------------------------------
+
+largest.interval.percent <- (
+  ale.intervals$N[
+    largest.local.row
+  ] /
+    sum(
+      ale.intervals$N
+    )
+) * 100
+
 
 cat(
   "\n====================================================\n"
 )
 
 cat(
-  "BLACK BEAR DAILY-COUNT PM2.5 ALE\n"
+  "BLACK BEAR PM2.5 ALE SUMMARY\n"
 )
 
 cat(
   "====================================================\n"
 )
 
-
-print(
-  bear.ale
-)
-
-
-
-# ============================================================
-# ALE DIRECTION
-# ============================================================
-
-
-
-# ------------------------------------------------------------
-# 15. Calculate low-to-high ALE change
-# ------------------------------------------------------------
-
-ale.low.to.high <-
-  
-  bear.ale$ALE[
-    nrow(
-      bear.ale
-    )
-  ] -
-  
-  bear.ale$ALE[
-    1
-  ]
-
-
-
 cat(
-  "\nALE low-to-high change:",
+  "Overall ALE low-to-high change:",
   round(
-    ale.low.to.high,
+    overall.ale.change,
     6
   ),
   "\n"
 )
-
-
-
-# ------------------------------------------------------------
-# 16. Determine PM2.5 response direction
-# ------------------------------------------------------------
-
-if (
-  ale.low.to.high < 0
-) {
-  
-  ale.direction <-
-    "NEGATIVE"
-  
-} else if (
-  ale.low.to.high > 0
-) {
-  
-  ale.direction <-
-    "POSITIVE"
-  
-} else {
-  
-  ale.direction <-
-    "FLAT"
-}
-
-
-
-cat(
-  "ALE direction:",
-  ale.direction,
-  "\n"
-)
-
-
-
-# ============================================================
-# CHECK WHETHER ONE INTERVAL DOMINATES
-# ============================================================
-
-
-
-# ------------------------------------------------------------
-# 17. Largest absolute local effect
-# ------------------------------------------------------------
-
-largest.local.effect <- max(
-  abs(
-    bear.ale$Local_Effect
-  ),
-  na.rm =
-    TRUE
-)
-
-
-
-# ------------------------------------------------------------
-# 18. Total absolute ALE movement
-# ------------------------------------------------------------
-
-total.absolute.movement <- sum(
-  abs(
-    bear.ale$Local_Effect
-  ),
-  na.rm =
-    TRUE
-)
-
-
-
-# ------------------------------------------------------------
-# 19. Largest interval contribution
-# ------------------------------------------------------------
-
-largest.interval.percent <- (
-  
-  largest.local.effect /
-    total.absolute.movement
-  
-) * 100
-
-
 
 cat(
   "Largest local effect:",
@@ -684,143 +630,202 @@ cat(
   "\n"
 )
 
+cat(
+  "Largest-effect interval:",
+  round(
+    largest.local.lower,
+    4
+  ),
+  "to",
+  round(
+    largest.local.upper,
+    4
+  ),
+  "\n"
+)
 
 cat(
-  "Largest interval contribution:",
+  "Observations in largest-effect interval:",
   round(
     largest.interval.percent,
     2
   ),
-  "%",
-  "\n"
+  "%\n"
 )
 
 
-
 # ============================================================
-# RAW OBSERVED DAILY COUNTS BY PM2.5
+# RAW OBSERVED DAILY COUNTS
 # ============================================================
-
 
 
 # ------------------------------------------------------------
-# 20. Assign observations to PM2.5 intervals
+# 18. Assign observations to PM2.5 bins
 # ------------------------------------------------------------
 
-central.data$Smoke_Bin <- cut(
+observed.data <- ale.data
+
+
+observed.data$PM25_Bin <- cut(
   
-  central.data$scale.smoke,
+  observed.data$scale.smoke,
   
   breaks =
-    ale.breaks,
+    smoke.breaks,
   
   include.lowest =
     TRUE,
   
-  labels =
-    FALSE
+  right =
+    TRUE
 )
 
 
+# ------------------------------------------------------------
+# 19. Remove unassigned observations
+# ------------------------------------------------------------
+
+observed.data <- observed.data[
+  !is.na(
+    observed.data$PM25_Bin
+  ),
+]
+
 
 # ------------------------------------------------------------
-# 21. Calculate observed daily-count summaries
+# 20. Calculate mean Daily_Count and mean PM2.5
 # ------------------------------------------------------------
 
-observed.counts <- do.call(
+observed.summary <- aggregate(
   
-  rbind,
+  cbind(
+    Daily_Count,
+    scale.smoke
+  ) ~ PM25_Bin,
   
-  lapply(
-    
-    sort(
-      unique(
-        central.data$Smoke_Bin[
-          !is.na(
-            central.data$Smoke_Bin
-          )
-        ]
-      )
-    ),
-    
-    function(
-    b
-    ) {
-      
-      rows <- which(
-        central.data$Smoke_Bin ==
-          b
-      )
-      
-      
-      temp <- central.data[
-        rows,
-        ,
-        drop = FALSE
-      ]
-      
-      
-      data.frame(
-        
-        Bin =
-          b,
-        
-        Mean_PM25 =
-          mean(
-            temp$scale.smoke,
-            na.rm = TRUE
-          ),
-        
-        Observations =
-          nrow(
-            temp
-          ),
-        
-        Mean_Daily_Count =
-          mean(
-            temp$Daily_Count,
-            na.rm = TRUE
-          ),
-        
-        Total_Detections =
-          sum(
-            temp$Daily_Count,
-            na.rm = TRUE
-          ),
-        
-        Positive_Detection_Rate =
-          mean(
-            temp$Daily_Count > 0,
-            na.rm = TRUE
-          )
-      )
-    }
-  )
+  data =
+    observed.data,
+  
+  FUN =
+    mean
 )
 
 
+names(
+  observed.summary
+)[
+  names(
+    observed.summary
+  ) ==
+    "Daily_Count"
+] <- "Mean_Daily_Count"
+
+
+names(
+  observed.summary
+)[
+  names(
+    observed.summary
+  ) ==
+    "scale.smoke"
+] <- "Mean_PM25"
+
 
 # ------------------------------------------------------------
-# 22. Print observed count table
+# 21. Number of camera-days per bin
 # ------------------------------------------------------------
+
+bin.n <- aggregate(
+  
+  Daily_Count ~ PM25_Bin,
+  
+  data =
+    observed.data,
+  
+  FUN =
+    length
+)
+
+
+names(
+  bin.n
+)[2] <- "N"
+
+
+# ------------------------------------------------------------
+# 22. Total detections per bin
+# ------------------------------------------------------------
+
+bin.total <- aggregate(
+  
+  Daily_Count ~ PM25_Bin,
+  
+  data =
+    observed.data,
+  
+  FUN =
+    sum
+)
+
+
+names(
+  bin.total
+)[2] <- "Total_Detections"
+
+
+# ------------------------------------------------------------
+# 23. Combine raw summaries
+# ------------------------------------------------------------
+
+observed.summary <- merge(
+  
+  observed.summary,
+  
+  bin.n,
+  
+  by =
+    "PM25_Bin"
+)
+
+
+observed.summary <- merge(
+  
+  observed.summary,
+  
+  bin.total,
+  
+  by =
+    "PM25_Bin"
+)
+
+
+observed.summary <- observed.summary[
+  order(
+    observed.summary$Mean_PM25
+  ),
+]
+
+
+rownames(
+  observed.summary
+) <- NULL
+
 
 cat(
   "\n====================================================\n"
 )
 
 cat(
-  "OBSERVED BLACK BEAR DAILY COUNTS BY PM2.5\n"
+  "OBSERVED BLACK BEAR DAILY COUNTS BY PM2.5 BIN\n"
 )
 
 cat(
   "====================================================\n"
 )
 
-
 print(
-  observed.counts
+  observed.summary
 )
-
 
 
 # ============================================================
@@ -828,9 +833,8 @@ print(
 # ============================================================
 
 
-
 # ------------------------------------------------------------
-# 23. Create results directory
+# 24. Create results directory
 # ------------------------------------------------------------
 
 dir.create(
@@ -842,14 +846,13 @@ dir.create(
 )
 
 
-
 # ------------------------------------------------------------
-# 24. Save ALE table
+# 25. Save ALE interval table
 # ------------------------------------------------------------
 
 write.csv(
   
-  bear.ale,
+  ale.intervals,
   
   "results/Black_Bear_Daily_Count_PM25_ALE.csv",
   
@@ -858,61 +861,34 @@ write.csv(
 )
 
 
-
 # ------------------------------------------------------------
-# 25. Save observed daily-count summaries
-# ------------------------------------------------------------
-
-write.csv(
-  
-  observed.counts,
-  
-  "results/Black_Bear_Observed_Daily_Counts_By_PM25.csv",
-  
-  row.names =
-    FALSE
-)
-
-
-
-# ------------------------------------------------------------
-# 26. Create summary table
+# 26. Save ALE summary
 # ------------------------------------------------------------
 
 ale.summary <- data.frame(
-  
-  Species =
-    "Black Bear",
-  
-  ALE_Low_to_High_Change =
-    ale.low.to.high,
-  
-  ALE_Direction =
-    ale.direction,
-  
-  Largest_Local_Effect =
-    largest.local.effect,
-  
-  Largest_Interval_Percent =
-    largest.interval.percent,
-  
-  Central_Observations =
-    nrow(
-      central.data
-    ),
   
   PM25_1st_Percentile =
     smoke.lower,
   
   PM25_99th_Percentile =
-    smoke.upper
+    smoke.upper,
+  
+  Overall_ALE_Change =
+    overall.ale.change,
+  
+  Largest_Local_Effect =
+    largest.local.effect,
+  
+  Largest_Effect_Lower =
+    largest.local.lower,
+  
+  Largest_Effect_Upper =
+    largest.local.upper,
+  
+  Largest_Interval_Percent =
+    largest.interval.percent
 )
 
-
-
-# ------------------------------------------------------------
-# 27. Save summary table
-# ------------------------------------------------------------
 
 write.csv(
   
@@ -925,33 +901,45 @@ write.csv(
 )
 
 
+# ------------------------------------------------------------
+# 27. Save raw observed-count summary
+# ------------------------------------------------------------
+
+write.csv(
+  
+  observed.summary,
+  
+  "results/Black_Bear_Observed_Daily_Counts_By_PM25.csv",
+  
+  row.names =
+    FALSE
+)
+
 
 # ============================================================
-# PLOT 1:
-# RANDOM FOREST ALE
+# ALE PLOT
 # ============================================================
+
+
+# ------------------------------------------------------------
+# 28. Plot Black Bear PM2.5 ALE
+# ------------------------------------------------------------
 
 ale.plot <- ggplot(
   
-  bear.ale,
+  ale.intervals,
   
   aes(
     x =
-      Upper_PM25,
+      Midpoint,
+    
     y =
       ALE
   )
   
 ) +
   
-  geom_hline(
-    yintercept =
-      0,
-    linetype =
-      "dashed"
-  ) +
-  
-  geom_step(
+  geom_line(
     linewidth =
       1
   ) +
@@ -961,23 +949,31 @@ ale.plot <- ggplot(
       2
   ) +
   
+  geom_hline(
+    
+    yintercept =
+      0,
+    
+    linetype =
+      "dashed"
+  ) +
+  
   labs(
     
     title =
-      "Black Bear Daily-Count Response to Wildfire PM2.5",
+      "Black Bear PM2.5 Accumulated Local Effects",
     
     subtitle =
-      "Accumulated Local Effects",
+      "Random Forest modeled association with daily detection count",
     
     x =
-      "Wildfire-attributable PM2.5 (scaled)",
+      "Standardized Wildfire-Attributable PM2.5",
     
     y =
-      "ALE Effect on Predicted Daily Count"
+      "Accumulated Local Effect"
   ) +
   
   theme_minimal()
-
 
 
 print(
@@ -985,6 +981,9 @@ print(
 )
 
 
+# ------------------------------------------------------------
+# 29. Save ALE plot
+# ------------------------------------------------------------
 
 ggsave(
   
@@ -1005,19 +1004,23 @@ ggsave(
 )
 
 
+# ============================================================
+# RAW OBSERVED COUNT PLOT
+# ============================================================
 
-# ============================================================
-# PLOT 2:
-# OBSERVED MEAN DAILY COUNT
-# ============================================================
+
+# ------------------------------------------------------------
+# 30. Plot observed Black Bear counts
+# ------------------------------------------------------------
 
 observed.plot <- ggplot(
   
-  observed.counts,
+  observed.summary,
   
   aes(
     x =
       Mean_PM25,
+    
     y =
       Mean_Daily_Count
   )
@@ -1037,13 +1040,13 @@ observed.plot <- ggplot(
   labs(
     
     title =
-      "Observed Black Bear Daily Counts by Wildfire PM2.5",
+      "Observed Black Bear Daily Counts by PM2.5",
     
     subtitle =
-      "Mean daily detections within PM2.5 intervals",
+      "Raw mean daily detections within PM2.5 bins",
     
     x =
-      "Mean Wildfire-attributable PM2.5 (scaled)",
+      "Mean Standardized Wildfire-Attributable PM2.5",
     
     y =
       "Observed Mean Daily Count"
@@ -1052,12 +1055,14 @@ observed.plot <- ggplot(
   theme_minimal()
 
 
-
 print(
   observed.plot
 )
 
 
+# ------------------------------------------------------------
+# 31. Save observed-count plot
+# ------------------------------------------------------------
 
 ggsave(
   
@@ -1078,7 +1083,6 @@ ggsave(
 )
 
 
-
 # ============================================================
 # FINAL SUMMARY
 # ============================================================
@@ -1088,59 +1092,51 @@ cat(
 )
 
 cat(
-  "BLACK BEAR DAILY-COUNT PM2.5 ALE SUMMARY\n"
+  "FINAL BLACK BEAR ALE SUMMARY\n"
 )
 
 cat(
   "====================================================\n"
 )
 
-
 cat(
-  "Central observations:",
-  nrow(
-    central.data
-  ),
-  "\n"
+  "Trees: 500\n"
 )
 
+cat(
+  "mtry: 3\n"
+)
 
 cat(
-  "PM2.5 1st percentile:",
+  "Minimum node size: 20\n"
+)
+
+cat(
+  "Split rule: Poisson\n"
+)
+
+cat(
+  "\nPM2.5 range:",
   round(
     smoke.lower,
-    6
+    4
   ),
-  "\n"
-)
-
-
-cat(
-  "PM2.5 99th percentile:",
+  "to",
   round(
     smoke.upper,
-    6
+    4
   ),
   "\n"
 )
 
-
 cat(
-  "ALE low-to-high change:",
+  "Overall ALE change:",
   round(
-    ale.low.to.high,
+    overall.ale.change,
     6
   ),
   "\n"
 )
-
-
-cat(
-  "ALE direction:",
-  ale.direction,
-  "\n"
-)
-
 
 cat(
   "Largest local effect:",
@@ -1150,18 +1146,6 @@ cat(
   ),
   "\n"
 )
-
-
-cat(
-  "Largest interval contribution:",
-  round(
-    largest.interval.percent,
-    2
-  ),
-  "%",
-  "\n"
-)
-
 
 cat(
   "====================================================\n"
